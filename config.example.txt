@@ -1,0 +1,38 @@
+# Rewind settings. Change a line, then right-click the tray icon -> Reload config.
+# Lines starting with # are comments.
+
+# Press this to save the last <seconds> as a clip. Examples: ctrl+alt+p, F9, shift+F10
+hotkey=ctrl+alt+p
+
+# How far back a clip reaches, in seconds (5-600). Memory use is about bitrate x seconds / 8 MB.
+seconds=60
+
+# Frames per second to record (15-240).
+fps=60
+
+# Video quality in megabits per second (2-150). 20 is plenty for 1440p60 h264.
+bitrate_mbps=20
+
+# h264 plays everywhere. av1 = smaller files, same quality, needs a newer phone to play.
+codec=h264
+
+# primary = the main monitor. Or a number: run  Rewind.exe --list  to see them.
+monitor=primary
+
+# Record what comes out of the speakers/headset (track 1).
+game_audio=on
+
+# Record the microphone as its own track (track 2).
+mic=on
+
+# Cleanup applied to the mic (an ffmpeg audio filter). off = raw mic.
+mic_filter=afftdn=nr=12:nf=-40
+
+# If sound lands late or early against the picture, shift it here (milliseconds, + = later).
+audio_offset_ms=0
+
+# Where clips go.
+clips=C:\Users\RioMa\Videos\Rewind
+
+# Leave empty to use the ffmpeg on PATH, or give a full path to ffmpeg.exe.
+ffmpeg=

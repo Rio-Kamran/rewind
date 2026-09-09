@@ -1,0 +1,18 @@
+# Per-user config (generated at runtime; not part of the repo)
+config.txt
+
+# Build output (run build.ps1)
+*.exe
+*.pdb
+
+# Runtime files
+rewind.log
+rewind.log.old
+thumbs/
+
+# OS / editor cruft
+Thumbs.db
+desktop.ini
+.vs/
+*.user
+.claude/
