@@ -12,8 +12,8 @@ using Microsoft.Win32;
 namespace Rewind
 {
     /// <summary>
-    /// The tray icon and everything hanging off it: the capture pipeline, the hotkey, the
-    /// "--save" signal from other processes, and the balloon that says a clip landed.
+    /// The tray icon and everything hanging off it: the capture pipeline, the hotkeys, the
+    /// "--save" signals from other processes, and the balloon that says a clip landed.
     /// </summary>
     internal sealed class TrayApp : IDisposable
     {
@@ -30,13 +30,16 @@ namespace Rewind
         private Icon _recordingIcon;
         private Icon _pausedIcon;
         private ToolStripMenuItem _saveItem;
+        private ToolStripMenuItem _saveShortItem;
         private ToolStripMenuItem _pauseItem;
         private HotkeyWindow _hotkeyWindow;
         private Control _ui;
         private EventWaitHandle _saveEvent;
+        private EventWaitHandle _saveShortEvent;
         private EventWaitHandle _quitEvent;
         private Thread _saveSignalThread;
         private System.Windows.Forms.Timer _tooltipTimer;
+        private Action _balloonAction;
         private int _saving;
         private bool _userPaused;
         private bool _lockPaused;
@@ -83,7 +86,7 @@ namespace Rewind
 
             BuildTray();
             OpenPipeline();
-            RegisterHotkey();
+            RegisterHotkeys();
             StartSaveSignal();
             SystemEvents.SessionSwitch += OnSessionSwitch;
 
@@ -91,8 +94,9 @@ namespace Rewind
             _tooltipTimer.Tick += (s, e) => RefreshTooltip();
             _tooltipTimer.Start();
 
-            Log.Info(string.Format("Rewind started: {0} s buffer, {1} fps, {2} Mbps {3}, hotkey {4}, clips -> {5}",
-                _config.Seconds, _config.Fps, _config.BitrateMbps, _config.Codec, _config.Hotkey, _config.ClipsFolder));
+            Log.Info(string.Format("Rewind started: {0} s buffer, {1} fps, {2} Mbps {3}, hotkey {4}, short clip {5} s on {6}, clips -> {7}",
+                _config.Seconds, _config.Fps, _config.BitrateMbps, _config.Codec, _config.Hotkey,
+                _config.ShortSeconds, _config.HotkeyShort.Length > 0 ? _config.HotkeyShort : "(no key)", _config.ClipsFolder));
             return true;
         }
 
@@ -157,38 +161,52 @@ namespace Rewind
             ClosePipeline();
             _config = fresh;
             OpenPipeline();
-            RegisterHotkey();
+            RegisterHotkeys();
             if (_userPaused) _recorder.Pause();
             Balloon("Config reloaded", string.Format("{0} s clips, hotkey {1}", _config.Seconds, HotkeySpec.Parse(_config.Hotkey).Text), ToolTipIcon.Info);
         }
 
-        // ---- hotkey + external save signal ----
+        // ---- hotkeys + external save signals ----
 
-        private void RegisterHotkey()
+        private void RegisterHotkeys()
         {
-            var spec = HotkeySpec.Parse(_config.Hotkey);
             if (_hotkeyWindow == null)
             {
                 _hotkeyWindow = new HotkeyWindow();
-                _hotkeyWindow.Pressed += (s, e) => SaveClip("hotkey", _config.Seconds);
+                _hotkeyWindow.Pressed += (s, e) =>
+                {
+                    if (e.Slot == 0) SaveClip("hotkey", _config.Seconds);
+                    else SaveClip("short hotkey", _config.ShortSeconds);
+                };
             }
+
+            var main = HotkeySpec.Parse(_config.Hotkey);
+            _saveItem.Text = "Save clip now  (" + Register(0, main) + ")";
+
+            _saveShortItem.Text = "Save last " + _config.ShortSeconds + " s";
+            if (_config.HotkeyShort.Length > 0)
+                _saveShortItem.Text += "  (" + Register(1, HotkeySpec.Parse(_config.HotkeyShort)) + ")";
+            else
+                _hotkeyWindow.Unregister(1);
+        }
+
+        /// <summary>Claims a hotkey and returns its text for the menu, or "no hotkey" after explaining why.</summary>
+        private string Register(int slot, HotkeySpec spec)
+        {
             string error;
-            if (_hotkeyWindow.Register(spec, out error))
-            {
-                _saveItem.Text = "Save clip now  (" + spec.Text + ")";
-                return;
-            }
+            if (_hotkeyWindow.Register(slot, spec, out error)) return spec.Text;
             Log.Warn(error);
-            _saveItem.Text = "Save clip now  (no hotkey)";
-            Balloon("Hotkey not available", error + " Use the tray menu, or change hotkey= in config.txt.", ToolTipIcon.Warning);
+            Balloon("Hotkey not available", error + " Use the tray menu, or change the hotkey in config.txt.", ToolTipIcon.Warning);
+            return "no hotkey";
         }
 
         private void StartSaveSignal()
         {
             bool created;
             _saveEvent = new EventWaitHandle(false, EventResetMode.AutoReset, Program.SaveEventName, out created);
+            _saveShortEvent = new EventWaitHandle(false, EventResetMode.AutoReset, Program.SaveShortEventName, out created);
             _quitEvent = new EventWaitHandle(false, EventResetMode.AutoReset, Program.QuitEventName, out created);
-            var signals = new WaitHandle[] { _saveEvent, _quitEvent };
+            var signals = new WaitHandle[] { _saveEvent, _saveShortEvent, _quitEvent };
             _saveSignalThread = new Thread(() =>
             {
                 while (!_disposed)
@@ -196,7 +214,8 @@ namespace Rewind
                     var fired = WaitHandle.WaitAny(signals, 500);
                     if (_disposed) break;
                     if (fired == 0) SaveClip("--save", _config.Seconds);
-                    else if (fired == 1)
+                    else if (fired == 1) SaveClip("--save-short", _config.ShortSeconds);
+                    else if (fired == 2)
                     {
                         Log.Info("quit from --quit");
                         OnUi(Quit);
@@ -240,13 +259,16 @@ namespace Rewind
                     OnUi(() =>
                     {
                         SystemSounds.Asterisk.Play();
-                        Balloon("Clip saved", Path.GetFileName(clip.Path), ToolTipIcon.Info);
+                        var title = seconds == config.Seconds ? "Clip saved" : "Clip saved (" + seconds + " s)";
+                        Balloon(title, Path.GetFileName(clip.Path) + "\nClick to show it in the folder.", ToolTipIcon.Info,
+                            () => ShowInFolder(clip.Path));
                     });
                 }
                 catch (Exception error)
                 {
                     Log.Error("clip save failed: " + error);
-                    OnUi(() => Balloon("Clip NOT saved", error.Message, ToolTipIcon.Error));
+                    OnUi(() => Balloon("Clip NOT saved", error.Message + "\nClick to open the log.", ToolTipIcon.Error,
+                        () => OpenFile(Log.Path)));
                 }
                 finally
                 {
@@ -266,8 +288,10 @@ namespace Rewind
             var menu = new ContextMenuStrip();
             _saveItem = new ToolStripMenuItem("Save clip now", null, (s, e) => SaveClip("menu", _config.Seconds));
             _saveItem.Font = new Font(_saveItem.Font, FontStyle.Bold);
+            _saveShortItem = new ToolStripMenuItem("Save short clip", null, (s, e) => SaveClip("menu", _config.ShortSeconds));
             _pauseItem = new ToolStripMenuItem("Pause recording", null, (s, e) => TogglePause());
             menu.Items.Add(_saveItem);
+            menu.Items.Add(_saveShortItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(_pauseItem);
             menu.Items.Add(new ToolStripMenuItem("Open clips folder", null, (s, e) => OpenClipsFolder()));
@@ -286,6 +310,13 @@ namespace Rewind
                 Visible = true
             };
             _icon.DoubleClick += (s, e) => SaveClip("double-click", _config.Seconds);
+            _icon.BalloonTipClicked += (s, e) =>
+            {
+                var action = _balloonAction;
+                _balloonAction = null;
+                if (action != null) action();
+            };
+            _icon.BalloonTipClosed += (s, e) => _balloonAction = null;
         }
 
         private static Icon DrawIcon(Color fill)
@@ -356,6 +387,18 @@ namespace Rewind
             }
         }
 
+        private void ShowInFolder(string path)
+        {
+            try
+            {
+                Process.Start("explorer.exe", Shell.SelectInExplorerArgs(path));
+            }
+            catch (Exception error)
+            {
+                Balloon("Couldn't open folder", error.Message, ToolTipIcon.Error);
+            }
+        }
+
         private void OpenFile(string path)
         {
             try
@@ -371,7 +414,14 @@ namespace Rewind
 
         private void Balloon(string title, string text, ToolTipIcon kind)
         {
+            Balloon(title, text, kind, null);
+        }
+
+        /// <summary>Shows a balloon; onClick (if any) runs when the user clicks it.</summary>
+        private void Balloon(string title, string text, ToolTipIcon kind, Action onClick)
+        {
             if (_icon == null) return;
+            _balloonAction = onClick;
             _icon.ShowBalloonTip(4000, title, text, kind);
         }
 
@@ -411,6 +461,7 @@ namespace Rewind
             if (_hotkeyWindow != null) _hotkeyWindow.Dispose();
             ClosePipeline();
             if (_saveEvent != null) _saveEvent.Dispose();
+            if (_saveShortEvent != null) _saveShortEvent.Dispose();
             if (_quitEvent != null) _quitEvent.Dispose();
             if (_icon != null)
             {

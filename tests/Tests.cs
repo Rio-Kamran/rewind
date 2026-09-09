@@ -30,13 +30,10 @@ namespace Rewind.Tests
                 var d = Config.Defaults();
                 Equal(d.Seconds, c.Seconds); Equal(d.MicFilter, c.MicFilter); Equal(d.ClipsFolder, c.ClipsFolder); Equal("", c.FfmpegPath);
             });
-            Run("config: config.example.txt is the default config", () =>
+            Run("config: config.example.txt is the default config, byte for byte", () =>
             {
-                var c = Config.Parse(File.ReadAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.example.txt")));
-                var d = Config.Defaults();
-                Equal(d.Hotkey, c.Hotkey); Equal(d.Seconds, c.Seconds); Equal(d.Fps, c.Fps); Equal(d.BitrateMbps, c.BitrateMbps);
-                Equal(d.Codec, c.Codec); Equal(d.Monitor, c.Monitor); Equal(d.GameAudio, c.GameAudio); Equal(d.Mic, c.Mic);
-                Equal(d.MicFilter, c.MicFilter); Equal(d.AudioOffsetMs, c.AudioOffsetMs); Equal(d.ClipsFolder, c.ClipsFolder); Equal(d.FfmpegPath, c.FfmpegPath);
+                var example = File.ReadAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.example.txt"));
+                Equal(Config.DefaultText().Replace("\r\n", "\n").Trim(), example.Replace("\r\n", "\n").Trim());
             });
             Run("config: values, inline comments and case", () =>
             {
@@ -53,6 +50,46 @@ namespace Rewind.Tests
             Run("config: duplicate key is refused", () => Throws<ConfigException>(() => Config.Parse("seconds=10\nseconds=20")));
             Run("config: line without = is refused", () => Throws<ConfigException>(() => Config.Parse("seconds")));
             Run("config: bad hotkey is refused", () => Throws<ConfigException>(() => Config.Parse("hotkey=ctrl+banana")));
+            Run("config: new defaults (short hotkey, games mode)", () =>
+            {
+                var c = Config.Parse("");
+                Equal("ctrl+alt+o", c.HotkeyShort); Equal(15, c.ShortSeconds); Equal("always", c.Record); True(!c.GamesOnly, "always");
+                Equal(45, c.GameGraceSeconds); Equal(6, c.Games.Count); Equal("javaw", c.Games[0]);
+            });
+            Run("config: hotkey_short=off disables it", () => Equal("", Config.Parse("hotkey_short=OFF").HotkeyShort));
+            Run("config: same key twice is refused", () => Throws<ConfigException>(() => Config.Parse("hotkey=ctrl+alt+p\nhotkey_short=Alt+Ctrl+P")));
+            Run("config: short_seconds must be below seconds", () =>
+            {
+                Throws<ConfigException>(() => Config.Parse("seconds=20\nshort_seconds=20"));
+                Equal(19, Config.Parse("seconds=20\nshort_seconds=19").ShortSeconds);
+            });
+            Run("config: bad record mode is refused", () => Throws<ConfigException>(() => Config.Parse("record=sometimes")));
+            Run("config: grace out of range is refused", () => Throws<ConfigException>(() => Config.Parse("game_grace_seconds=2")));
+            Run("config: games list is trimmed, .exe dropped, repeats gone", () =>
+            {
+                var games = Config.ParseGames(" javaw , cs2.exe;Roblox,,JAVAW, RocketLeague.EXE ");
+                Equal("javaw|cs2|Roblox|RocketLeague", string.Join("|", games));
+                Equal(0, Config.ParseGames("").Count);
+            });
+            Run("config: text round-trips a non-default config", () =>
+            {
+                var c = Config.Parse("hotkey=F9\nhotkey_short=shift+F9\nseconds=90\nshort_seconds=20\nfps=30\nbitrate_mbps=8\ncodec=hevc\nmonitor=1\n"
+                    + "game_audio=off\nmic=off\nmic_filter=off\naudio_offset_ms=50\nclips=D:\\Clips\nffmpeg=C:\\ff\\ffmpeg.exe\nrecord=games\ngames=javaw, cs2.exe\ngame_grace_seconds=30");
+                var text = c.Text();
+                Contains(text, "# Where clips go." + Environment.NewLine + "clips=D:\\Clips" + Environment.NewLine);
+                var back = Config.Parse(text);
+                Equal("F9", back.Hotkey); Equal("shift+F9", back.HotkeyShort); Equal(90, back.Seconds); Equal(20, back.ShortSeconds);
+                Equal(30, back.Fps); Equal(8, back.BitrateMbps); Equal("hevc", back.Codec); Equal("1", back.Monitor);
+                True(!back.GameAudio && !back.Mic, "audio off"); Equal("", back.MicFilter); Equal(50, back.AudioOffsetMs);
+                Equal(@"D:\Clips", back.ClipsFolder); Equal(@"C:\ff\ffmpeg.exe", back.FfmpegPath); True(back.GamesOnly, "games mode");
+                Equal("javaw|cs2", string.Join("|", back.Games)); Equal(30, back.GameGraceSeconds);
+            });
+            Run("config: text with missing values falls back to defaults", () =>
+            {
+                var text = Config.Text(new Dictionary<string, string> { { "seconds", "30" } });
+                var c = Config.Parse(text);
+                Equal(30, c.Seconds); Equal(60, c.Fps); Equal("ctrl+alt+p", c.Hotkey);
+            });
 
             Run("hotkey: ctrl+alt+p", () =>
             {
@@ -208,7 +245,7 @@ namespace Rewind.Tests
             Run("ffmpeg: remux line reads the ring from stdin", () =>
             {
                 var a = FfmpegArgs.Remux(@"C:\x\Rewind clip.mp4", new[] { "Game", "Mic" }, "h264");
-                Contains(a, "-loglevel error -nostdin -y -f mpegts -i pipe:0 -map 0:v -map 0:a? -c copy -metadata:s:a:0 title=\"Game\" -metadata:s:a:1 title=\"Mic\" -movflags +faststart \"C:\\x\\Rewind clip.mp4\"");
+                Contains(a, "-loglevel error -nostdin -y -f mpegts -i pipe:0 -map 0:v -map 0:a? -c copy -metadata:s:a:0 handler_name=\"Game\" -metadata:s:a:1 handler_name=\"Mic\" -movflags +faststart \"C:\\x\\Rewind clip.mp4\"");
                 True(!a.Contains("hvc1"), "no hvc1 tag for h264");
                 Contains(FfmpegArgs.Remux("b.mp4", new string[0], "hevc"), "-c copy -tag:v hvc1 ");
             });
@@ -218,6 +255,9 @@ namespace Rewind.Tests
                 Throws<ArgumentException>(() => new AudioSource("x", "p", "u8", 48000, 2, ""));
                 Throws<ArgumentOutOfRangeException>(() => new AudioSource("x", "p", "f32le", 100, 2, ""));
             });
+
+            Run("shell: explorer gets /select with a quoted path", () =>
+                Equal("/select,\"C:\\x\\a b.mp4\"", Shell.SelectInExplorerArgs(@"C:\x\a b.mp4")));
 
             Run("file name: process names are cleaned", () =>
             {

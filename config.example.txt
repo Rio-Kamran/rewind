@@ -4,8 +4,14 @@
 # Press this to save the last <seconds> as a clip. Examples: ctrl+alt+p, F9, shift+F10
 hotkey=ctrl+alt+p
 
+# A second key that saves just the last <short_seconds>. off = no second key.
+hotkey_short=ctrl+alt+o
+
 # How far back a clip reaches, in seconds (5-600). Memory use is about bitrate x seconds / 8 MB.
 seconds=60
+
+# How far back the short clip reaches, in seconds (3 up to seconds-1).
+short_seconds=15
 
 # Frames per second to record (15-240).
 fps=60
@@ -30,6 +36,15 @@ mic_filter=afftdn=nr=12:nf=-40
 
 # If sound lands late or early against the picture, shift it here (milliseconds, + = later).
 audio_offset_ms=0
+
+# always = record all the time. games = only while a game is in front (see games= below).
+record=always
+
+# Apps that count as a game even in a window (process names, comma separated). Any app covering the whole monitor counts too.
+games=javaw, FortniteClient-Win64-Shipping, RobloxPlayerBeta, RocketLeague, GeometryDash, Minecraft.Windows
+
+# In games mode: how long a game can be out of front before recording pauses (5-600 s).
+game_grace_seconds=45
 
 # Where clips go.
 clips=C:\Users\RioMa\Videos\Rewind

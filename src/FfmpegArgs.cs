@@ -131,8 +131,10 @@ namespace Rewind
             sb.Append("-hide_banner -loglevel error -nostdin -y -f mpegts -i pipe:0 ");
             sb.Append("-map 0:v -map 0:a? -c copy ");
             if (codec == "hevc") sb.Append("-tag:v hvc1 "); // the tag Apple players insist on
+            // MP4 keeps a track's name in its handler box, so it's handler_name, not title, that
+            // players show (title is silently dropped by the MP4 writer).
             for (var i = 0; i < audioLabels.Count; i++)
-                sb.Append("-metadata:s:a:").Append(i).Append(" title=").Append(Quote(audioLabels[i])).Append(' ');
+                sb.Append("-metadata:s:a:").Append(i).Append(" handler_name=").Append(Quote(audioLabels[i])).Append(' ');
             sb.Append("-movflags +faststart ").Append(Quote(mp4Path));
             return sb.ToString();
         }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Globalization;
 using System.IO;
 using System.Text;
@@ -14,23 +15,36 @@ namespace Rewind
 
     /// <summary>
     /// Everything Rewind can be told, read from config.txt. Immutable: Parse() builds a new one and
-    /// nothing edits it afterwards; "Reload config" in the tray builds another.
+    /// nothing edits it afterwards; "Reload config" in the tray builds another. Text() writes one
+    /// back out with its comments, which is how the settings window saves.
     /// </summary>
     internal sealed class Config
     {
         public const int MinSeconds = 5, MaxSeconds = 600;
+        public const int MinShortSeconds = 3;
         public const int MinFps = 15, MaxFps = 240;
         public const int MinBitrate = 2, MaxBitrate = 150;
         public const int MaxAudioOffsetMs = 2000;
+        public const int MinGraceSeconds = 5, MaxGraceSeconds = 600;
+        public const string RecordAlways = "always", RecordGames = "games";
 
         private static readonly string[] KnownKeys =
         {
-            "hotkey", "seconds", "fps", "bitrate_mbps", "codec", "monitor",
-            "game_audio", "mic", "mic_filter", "audio_offset_ms", "clips", "ffmpeg"
+            "hotkey", "hotkey_short", "seconds", "short_seconds", "fps", "bitrate_mbps", "codec", "monitor",
+            "game_audio", "mic", "mic_filter", "audio_offset_ms", "record", "games", "game_grace_seconds",
+            "clips", "ffmpeg"
+        };
+
+        private static readonly string[] DefaultGames =
+        {
+            "javaw", "FortniteClient-Win64-Shipping", "RobloxPlayerBeta", "RocketLeague", "GeometryDash", "Minecraft.Windows"
         };
 
         public readonly string Hotkey;
+        /// <summary>Second hotkey for a short clip; empty = none.</summary>
+        public readonly string HotkeyShort;
         public readonly int Seconds;
+        public readonly int ShortSeconds;
         public readonly int Fps;
         public readonly int BitrateMbps;
         /// <summary>h264, hevc or av1: which NVENC encoder to use.</summary>
@@ -43,15 +57,24 @@ namespace Rewind
         public readonly string MicFilter;
         /// <summary>Shifts both audio tracks later (+) or earlier (-) against the video.</summary>
         public readonly int AudioOffsetMs;
+        /// <summary>"always" or "games" (only record while a game is in front).</summary>
+        public readonly string Record;
+        /// <summary>Process names that count as a game even when windowed.</summary>
+        public readonly ReadOnlyCollection<string> Games;
+        /// <summary>In games mode: seconds a game may be out of front before recording pauses.</summary>
+        public readonly int GameGraceSeconds;
         public readonly string ClipsFolder;
         /// <summary>Explicit ffmpeg.exe path; empty = find it on PATH.</summary>
         public readonly string FfmpegPath;
 
-        private Config(string hotkey, int seconds, int fps, int bitrateMbps, string codec, string monitor,
-            bool gameAudio, bool mic, string micFilter, int audioOffsetMs, string clipsFolder, string ffmpegPath)
+        private Config(string hotkey, string hotkeyShort, int seconds, int shortSeconds, int fps, int bitrateMbps,
+            string codec, string monitor, bool gameAudio, bool mic, string micFilter, int audioOffsetMs,
+            string record, IList<string> games, int gameGraceSeconds, string clipsFolder, string ffmpegPath)
         {
             Hotkey = hotkey;
+            HotkeyShort = hotkeyShort;
             Seconds = seconds;
+            ShortSeconds = shortSeconds;
             Fps = fps;
             BitrateMbps = bitrateMbps;
             Codec = codec;
@@ -60,15 +83,20 @@ namespace Rewind
             Mic = mic;
             MicFilter = micFilter;
             AudioOffsetMs = audioOffsetMs;
+            Record = record;
+            Games = new ReadOnlyCollection<string>(new List<string>(games));
+            GameGraceSeconds = gameGraceSeconds;
             ClipsFolder = clipsFolder;
             FfmpegPath = ffmpegPath;
         }
 
+        public bool GamesOnly { get { return Record == RecordGames; } }
+
         public static Config Defaults()
         {
             var videos = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
-            return new Config("ctrl+alt+p", 60, 60, 20, "h264", "primary", true, true,
-                "afftdn=nr=12:nf=-40", 0, Path.Combine(videos, "Rewind"), "");
+            return new Config("ctrl+alt+p", "ctrl+alt+o", 60, 15, 60, 20, "h264", "primary", true, true,
+                "afftdn=nr=12:nf=-40", 0, RecordAlways, DefaultGames, 45, Path.Combine(videos, "Rewind"), "");
         }
 
         /// <summary>Reads the file, writing the default one first if it doesn't exist yet.</summary>
@@ -85,9 +113,21 @@ namespace Rewind
             var d = Defaults();
 
             var hotkey = Get(values, "hotkey", d.Hotkey);
-            HotkeySpec.Parse(hotkey); // validates; throws ConfigException with a clear message
+            var main = HotkeySpec.Parse(hotkey); // validates; throws ConfigException with a clear message
+
+            var hotkeyShort = Get(values, "hotkey_short", d.HotkeyShort);
+            if (hotkeyShort.ToLowerInvariant() == "off") hotkeyShort = "";
+            if (hotkeyShort.Length > 0)
+            {
+                var other = HotkeySpec.Parse(hotkeyShort);
+                if (other.Modifiers == main.Modifiers && other.VirtualKey == main.VirtualKey)
+                    throw new ConfigException("hotkey and hotkey_short are the same key (" + main.Text + "). Give the short clip its own key, or set hotkey_short=off.");
+            }
 
             var seconds = GetInt(values, "seconds", d.Seconds, MinSeconds, MaxSeconds);
+            var shortSeconds = GetInt(values, "short_seconds", d.ShortSeconds, MinShortSeconds, MaxSeconds);
+            if (shortSeconds >= seconds)
+                throw new ConfigException(string.Format("short_seconds ({0}) must be less than seconds ({1}).", shortSeconds, seconds));
             var fps = GetInt(values, "fps", d.Fps, MinFps, MaxFps);
             var bitrate = GetInt(values, "bitrate_mbps", d.BitrateMbps, MinBitrate, MaxBitrate);
             var audioOffset = GetInt(values, "audio_offset_ms", d.AudioOffsetMs, -MaxAudioOffsetMs, MaxAudioOffsetMs);
@@ -106,6 +146,12 @@ namespace Rewind
             var micFilter = Get(values, "mic_filter", d.MicFilter);
             if (micFilter.ToLowerInvariant() == "off") micFilter = "";
 
+            var record = Get(values, "record", d.Record).ToLowerInvariant();
+            if (record != RecordAlways && record != RecordGames)
+                throw new ConfigException("record must be always or games. Got: " + record);
+            var games = ParseGames(Get(values, "games", string.Join(", ", d.Games)));
+            var grace = GetInt(values, "game_grace_seconds", d.GameGraceSeconds, MinGraceSeconds, MaxGraceSeconds);
+
             var clips = Get(values, "clips", d.ClipsFolder);
             if (clips.Length == 0) throw new ConfigException("clips folder is empty.");
             if (clips.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
@@ -113,8 +159,97 @@ namespace Rewind
 
             var ffmpeg = Get(values, "ffmpeg", d.FfmpegPath);
 
-            return new Config(hotkey, seconds, fps, bitrate, codec, monitor,
-                gameAudio, mic, micFilter, audioOffset, clips, ffmpeg);
+            return new Config(hotkey, hotkeyShort, seconds, shortSeconds, fps, bitrate, codec, monitor,
+                gameAudio, mic, micFilter, audioOffset, record, games, grace, clips, ffmpeg);
+        }
+
+        /// <summary>"javaw, cs2.exe; Roblox" -> javaw, cs2, Roblox: trimmed, .exe dropped, empties and repeats gone.</summary>
+        public static ReadOnlyCollection<string> ParseGames(string raw)
+        {
+            var games = new List<string>();
+            foreach (var part in (raw ?? "").Split(',', ';'))
+            {
+                var name = part.Trim();
+                if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) name = name.Substring(0, name.Length - 4).Trim();
+                if (name.Length == 0) continue;
+                var seen = false;
+                foreach (var existing in games) if (string.Equals(existing, name, StringComparison.OrdinalIgnoreCase)) seen = true;
+                if (!seen) games.Add(name);
+            }
+            return new ReadOnlyCollection<string>(games);
+        }
+
+        /// <summary>The settings as config.txt strings, keyed by setting name. A fresh dictionary each call.</summary>
+        public IDictionary<string, string> Values()
+        {
+            var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            values["hotkey"] = Hotkey;
+            values["hotkey_short"] = HotkeyShort.Length > 0 ? HotkeyShort : "off";
+            values["seconds"] = Seconds.ToString(CultureInfo.InvariantCulture);
+            values["short_seconds"] = ShortSeconds.ToString(CultureInfo.InvariantCulture);
+            values["fps"] = Fps.ToString(CultureInfo.InvariantCulture);
+            values["bitrate_mbps"] = BitrateMbps.ToString(CultureInfo.InvariantCulture);
+            values["codec"] = Codec;
+            values["monitor"] = Monitor;
+            values["game_audio"] = GameAudio ? "on" : "off";
+            values["mic"] = Mic ? "on" : "off";
+            values["mic_filter"] = MicFilter.Length > 0 ? MicFilter : "off";
+            values["audio_offset_ms"] = AudioOffsetMs.ToString(CultureInfo.InvariantCulture);
+            values["record"] = Record;
+            values["games"] = string.Join(", ", Games);
+            values["game_grace_seconds"] = GameGraceSeconds.ToString(CultureInfo.InvariantCulture);
+            values["clips"] = ClipsFolder;
+            values["ffmpeg"] = FfmpegPath;
+            return values;
+        }
+
+        public string Text()
+        {
+            return Text(Values());
+        }
+
+        /// <summary>The commented config.txt written on first run.</summary>
+        public static string DefaultText()
+        {
+            return Defaults().Text();
+        }
+
+        /// <summary>Renders a full config.txt with comments; settings missing from values get their defaults.</summary>
+        public static string Text(IDictionary<string, string> values)
+        {
+            if (values == null) throw new ArgumentNullException("values");
+            var d = Defaults().Values();
+            var sb = new StringBuilder();
+            sb.AppendLine("# Rewind settings. Change a line, then right-click the tray icon -> Reload config.");
+            sb.AppendLine("# Lines starting with # are comments.");
+            sb.AppendLine();
+            Line(sb, values, d, "hotkey", "Press this to save the last <seconds> as a clip. Examples: ctrl+alt+p, F9, shift+F10");
+            Line(sb, values, d, "hotkey_short", "A second key that saves just the last <short_seconds>. off = no second key.");
+            Line(sb, values, d, "seconds", "How far back a clip reaches, in seconds (5-600). Memory use is about bitrate x seconds / 8 MB.");
+            Line(sb, values, d, "short_seconds", "How far back the short clip reaches, in seconds (3 up to seconds-1).");
+            Line(sb, values, d, "fps", "Frames per second to record (15-240).");
+            Line(sb, values, d, "bitrate_mbps", "Video quality in megabits per second (2-150). 20 is plenty for 1440p60 h264.");
+            Line(sb, values, d, "codec", "h264 plays everywhere. av1 = smaller files, same quality, needs a newer phone to play.");
+            Line(sb, values, d, "monitor", "primary = the main monitor. Or a number: run  Rewind.exe --list  to see them.");
+            Line(sb, values, d, "game_audio", "Record what comes out of the speakers/headset (track 1).");
+            Line(sb, values, d, "mic", "Record the microphone as its own track (track 2).");
+            Line(sb, values, d, "mic_filter", "Cleanup applied to the mic (an ffmpeg audio filter). off = raw mic.");
+            Line(sb, values, d, "audio_offset_ms", "If sound lands late or early against the picture, shift it here (milliseconds, + = later).");
+            Line(sb, values, d, "record", "always = record all the time. games = only while a game is in front (see games= below).");
+            Line(sb, values, d, "games", "Apps that count as a game even in a window (process names, comma separated). Any app covering the whole monitor counts too.");
+            Line(sb, values, d, "game_grace_seconds", "In games mode: how long a game can be out of front before recording pauses (5-600 s).");
+            Line(sb, values, d, "clips", "Where clips go.");
+            Line(sb, values, d, "ffmpeg", "Leave empty to use the ffmpeg on PATH, or give a full path to ffmpeg.exe.");
+            return sb.ToString().TrimEnd() + Environment.NewLine;
+        }
+
+        private static void Line(StringBuilder sb, IDictionary<string, string> values, IDictionary<string, string> defaults, string key, string comment)
+        {
+            string value;
+            if (!values.TryGetValue(key, out value) || value == null) value = defaults[key];
+            sb.AppendLine("# " + comment);
+            sb.AppendLine(key + "=" + value.Trim());
+            sb.AppendLine();
         }
 
         private static Dictionary<string, string> ReadPairs(string text)
@@ -178,52 +313,6 @@ namespace Rewind
                 case "off": case "false": case "no": case "0": return false;
             }
             throw new ConfigException(key + " must be on or off. Got: " + raw);
-        }
-
-        /// <summary>The commented config.txt written on first run.</summary>
-        public static string DefaultText()
-        {
-            var d = Defaults();
-            var sb = new StringBuilder();
-            sb.AppendLine("# Rewind settings. Change a line, then right-click the tray icon -> Reload config.");
-            sb.AppendLine("# Lines starting with # are comments.");
-            sb.AppendLine();
-            sb.AppendLine("# Press this to save the last <seconds> as a clip. Examples: ctrl+alt+p, F9, shift+F10");
-            sb.AppendLine("hotkey=" + d.Hotkey);
-            sb.AppendLine();
-            sb.AppendLine("# How far back a clip reaches, in seconds (5-600). Memory use is about bitrate x seconds / 8 MB.");
-            sb.AppendLine("seconds=" + d.Seconds);
-            sb.AppendLine();
-            sb.AppendLine("# Frames per second to record (15-240).");
-            sb.AppendLine("fps=" + d.Fps);
-            sb.AppendLine();
-            sb.AppendLine("# Video quality in megabits per second (2-150). 20 is plenty for 1440p60 h264.");
-            sb.AppendLine("bitrate_mbps=" + d.BitrateMbps);
-            sb.AppendLine();
-            sb.AppendLine("# h264 plays everywhere. av1 = smaller files, same quality, needs a newer phone to play.");
-            sb.AppendLine("codec=" + d.Codec);
-            sb.AppendLine();
-            sb.AppendLine("# primary = the main monitor. Or a number: run  Rewind.exe --list  to see them.");
-            sb.AppendLine("monitor=" + d.Monitor);
-            sb.AppendLine();
-            sb.AppendLine("# Record what comes out of the speakers/headset (track 1).");
-            sb.AppendLine("game_audio=" + (d.GameAudio ? "on" : "off"));
-            sb.AppendLine();
-            sb.AppendLine("# Record the microphone as its own track (track 2).");
-            sb.AppendLine("mic=" + (d.Mic ? "on" : "off"));
-            sb.AppendLine();
-            sb.AppendLine("# Cleanup applied to the mic (an ffmpeg audio filter). off = raw mic.");
-            sb.AppendLine("mic_filter=" + d.MicFilter);
-            sb.AppendLine();
-            sb.AppendLine("# If sound lands late or early against the picture, shift it here (milliseconds, + = later).");
-            sb.AppendLine("audio_offset_ms=" + d.AudioOffsetMs);
-            sb.AppendLine();
-            sb.AppendLine("# Where clips go.");
-            sb.AppendLine("clips=" + d.ClipsFolder);
-            sb.AppendLine();
-            sb.AppendLine("# Leave empty to use the ffmpeg on PATH, or give a full path to ffmpeg.exe.");
-            sb.AppendLine("ffmpeg=");
-            return sb.ToString();
         }
     }
 }

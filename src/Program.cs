@@ -10,14 +10,17 @@ namespace Rewind
     /// Rewind: a replay buffer for the main monitor. Runs in the tray; the hotkey (Ctrl+Alt+P by
     /// default) saves the last N seconds as an MP4 with game audio and mic on separate tracks.
     ///
-    ///   Rewind.exe          start (one copy only; a second start just says so)
-    ///   Rewind.exe --save   tell the running Rewind to save a clip (Stream Deck, scripts)
-    ///   Rewind.exe --list   show the monitors and audio devices it can see
+    ///   Rewind.exe               start (one copy only; a second start just says so)
+    ///   Rewind.exe --save        tell the running Rewind to save a clip (Stream Deck, scripts)
+    ///   Rewind.exe --save-short  the same, but only the last short_seconds
+    ///   Rewind.exe --quit        stop the running Rewind
+    ///   Rewind.exe --list        show the monitors and audio devices it can see
     /// </summary>
     internal static class Program
     {
         private const string InstanceMutexName = "Local\\Rewind.SingleInstance";
         public const string SaveEventName = "Local\\Rewind.SaveClip";
+        public const string SaveShortEventName = "Local\\Rewind.SaveShortClip";
         public const string QuitEventName = "Local\\Rewind.Quit";
 
         [STAThread]
@@ -30,11 +33,12 @@ namespace Rewind
 
             var mode = args.Length > 0 ? args[0].Trim().ToLowerInvariant() : "";
             if (mode == "--save") return Signal(SaveEventName, "Rewind isn't running, so there's nothing to save.");
+            if (mode == "--save-short") return Signal(SaveShortEventName, "Rewind isn't running, so there's nothing to save.");
             if (mode == "--quit") return Signal(QuitEventName, null);
             if (mode == "--list") return ShowDevices();
             if (mode.Length > 0)
             {
-                MessageBox.Show("Rewind.exe            start in the tray\nRewind.exe --save     save a clip from the running Rewind\nRewind.exe --quit     stop the running Rewind\nRewind.exe --list     list monitors and audio devices",
+                MessageBox.Show("Rewind.exe               start in the tray\nRewind.exe --save        save a clip from the running Rewind\nRewind.exe --save-short  save a short clip\nRewind.exe --quit        stop the running Rewind\nRewind.exe --list        list monitors and audio devices",
                     "Rewind");
                 return 0;
             }
