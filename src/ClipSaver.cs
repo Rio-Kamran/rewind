@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 
 namespace Rewind
 {
@@ -14,83 +16,133 @@ namespace Rewind
         public readonly long Bytes;
         /// <summary>How much time the ring held when the hotkey was pressed.</summary>
         public readonly TimeSpan Buffered;
+        /// <summary>How many seconds were asked for.</summary>
+        public readonly int Seconds;
+        /// <summary>True when the clip starts exactly on a keyframe.</summary>
+        public readonly bool CleanCut;
+        public readonly long TrimmedBytes;
 
-        public SavedClip(string path, long bytes, TimeSpan buffered)
+        public SavedClip(string path, long bytes, TimeSpan buffered, int seconds, bool cleanCut, long trimmedBytes)
         {
             Path = path;
             Bytes = bytes;
             Buffered = buffered;
+            Seconds = seconds;
+            CleanCut = cleanCut;
+            TrimmedBytes = trimmedBytes;
         }
     }
 
     /// <summary>
-    /// Turns the ring buffer into a clip: dump the last N seconds of MPEG-TS to a temp file, let
-    /// ffmpeg wrap it in an MP4 without re-encoding (a second or so of work), delete the temp file.
+    /// Turns the ring buffer into a clip: find the first keyframe in the last N seconds, then pour
+    /// the MPEG-TS bytes from there straight into an ffmpeg that wraps them in an MP4 without
+    /// re-encoding. No temp file, no copy of the buffer: the ring's own chunks are written as-is.
     /// </summary>
     internal static class ClipSaver
     {
         private const int MinUsefulBytes = 200 * 1024;
         private const int RemuxTimeoutMs = 60000;
 
-        public static SavedClip Save(ChunkRing ring, Config config, string ffmpegPath, IList<string> audioLabels)
+        public static SavedClip Save(ChunkRing ring, Config config, string ffmpegPath, IList<string> audioLabels, int seconds)
         {
             if (ring == null) throw new ArgumentNullException("ring");
             if (config == null) throw new ArgumentNullException("config");
             if (string.IsNullOrEmpty(ffmpegPath)) throw new ArgumentException("ffmpegPath");
             if (audioLabels == null) throw new ArgumentNullException("audioLabels");
+            if (seconds < 1) throw new ArgumentOutOfRangeException("seconds");
 
             // One extra second: the clip can only start at a keyframe, and there is one per second.
             var buffered = ring.Span;
-            var data = ring.Snapshot(TimeSpan.FromSeconds(config.Seconds + 1), DateTime.UtcNow);
-            if (data.Length < MinUsefulBytes)
-                throw new InvalidOperationException("Nothing to save yet: the buffer is still filling (" + data.Length / 1024 + " KB).");
+            var chunks = ring.Chunks(TimeSpan.FromSeconds(seconds + 1), DateTime.UtcNow);
+            long total = 0;
+            foreach (var chunk in chunks) total += chunk.Data.Length;
+            if (total < MinUsefulBytes)
+                throw new InvalidOperationException("Nothing to save yet: the buffer is still filling (" + total / 1024 + " KB).");
+
+            var plan = TsCut.Plan(chunks);
 
             Directory.CreateDirectory(config.ClipsFolder);
             var game = ForegroundApp.Name();
             var name = string.Format("Rewind {0}{1:yyyy-MM-dd HH-mm-ss}.mp4", game.Length > 0 ? game + " " : "", DateTime.Now);
             var mp4 = Path.Combine(config.ClipsFolder, name);
-            var ts = Path.Combine(config.ClipsFolder, ".rewind-" + Guid.NewGuid().ToString("N") + ".ts");
 
-            try
-            {
-                File.WriteAllBytes(ts, data);
-                Remux(ffmpegPath, FfmpegArgs.Remux(ts, mp4, audioLabels, config.Codec), mp4);
-                return new SavedClip(mp4, new FileInfo(mp4).Length, buffered);
-            }
-            finally
-            {
-                try
-                {
-                    if (File.Exists(ts)) File.Delete(ts);
-                }
-                catch (IOException error)
-                {
-                    Log.Warn("couldn't delete temp file " + ts + ": " + error.Message);
-                }
-            }
+            Remux(ffmpegPath, FfmpegArgs.Remux(mp4, audioLabels, config.Codec), mp4, chunks, plan);
+            return new SavedClip(mp4, new FileInfo(mp4).Length, buffered, seconds, plan.Clean, plan.TrimmedBytes);
         }
 
-        private static void Remux(string ffmpegPath, string args, string mp4)
+        private static void Remux(string ffmpegPath, string args, string mp4, IList<Chunk> chunks, CutPlan plan)
         {
             var info = new ProcessStartInfo(ffmpegPath, args)
             {
                 UseShellExecute = false,
                 CreateNoWindow = true,
+                RedirectStandardInput = true,
                 RedirectStandardError = true
             };
+            var stderr = new StringBuilder();
             using (var process = Process.Start(info))
             {
                 if (process == null) throw new InvalidOperationException("ffmpeg didn't start.");
-                var stderr = process.StandardError.ReadToEnd().Trim();
+                var drain = new Thread(() => Collect(process, stderr)) { IsBackground = true, Name = "rewind-remux-stderr" };
+                drain.Start();
+
+                var fed = true;
+                try
+                {
+                    var stdin = process.StandardInput.BaseStream;
+                    Feed(stdin, chunks, plan);
+                    stdin.Flush();
+                    process.StandardInput.Close();
+                }
+                catch (IOException)
+                {
+                    fed = false; // ffmpeg closed the pipe early: its stderr says why
+                }
+
                 if (!process.WaitForExit(RemuxTimeoutMs))
                 {
                     try { process.Kill(); } catch (InvalidOperationException) { }
                     throw new InvalidOperationException("ffmpeg took over a minute to write the clip.");
                 }
-                if (process.ExitCode != 0 || !File.Exists(mp4))
+                drain.Join(1000);
+                string errorText;
+                lock (stderr) errorText = stderr.ToString().Trim();
+                if (process.ExitCode != 0 || !File.Exists(mp4) || !fed)
                     throw new InvalidOperationException(string.Format("ffmpeg couldn't write the clip (code {0}): {1}",
-                        process.ExitCode, Tail(stderr)));
-                if (stderr.Length > 0) Log.Warn("remux: " + stderr);
+                        process.ExitCode, Tail(errorText)));
+                if (errorText.Length > 0) Log.Warn("remux: " + errorText);
+            }
+        }
+
+        /// <summary>Writes the tables, then every chunk from the cut on. Chunks are already pipe-sized (64 KB).</summary>
+        private static void Feed(Stream stdin, IList<Chunk> chunks, CutPlan plan)
+        {
+            if (plan.Prefix.Length > 0) stdin.Write(plan.Prefix, 0, plan.Prefix.Length);
+            for (var i = plan.StartChunk; i < chunks.Count; i++)
+            {
+                var data = chunks[i].Data;
+                var offset = i == plan.StartChunk ? plan.StartOffset : 0;
+                stdin.Write(data, offset, data.Length - offset);
+            }
+        }
+
+        private static void Collect(Process process, StringBuilder into)
+        {
+            try
+            {
+                string line;
+                while ((line = process.StandardError.ReadLine()) != null)
+                {
+                    if (line.Trim().Length == 0) continue;
+                    lock (into) into.AppendLine(line);
+                }
+            }
+            catch (IOException)
+            {
+                // The pipe went away with the process: nothing more to read.
+            }
+            catch (ObjectDisposedException)
+            {
             }
         }
 

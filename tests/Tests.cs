@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using Rewind;
 
 namespace Rewind.Tests
@@ -7,7 +8,7 @@ namespace Rewind.Tests
     /// <summary>
     /// Plain asserts, no framework: the in-box C# compiler is all this project needs. Covers the
     /// parts that can be wrong without a GPU or a microphone: config parsing, hotkey parsing, the
-    /// ring buffer, the ffmpeg command lines and the file-name cleanup.
+    /// ring buffer, the keyframe cut, the ffmpeg command lines and the file-name cleanup.
     /// </summary>
     internal static class Tests
     {
@@ -28,6 +29,14 @@ namespace Rewind.Tests
                 var c = Config.Parse(Config.DefaultText());
                 var d = Config.Defaults();
                 Equal(d.Seconds, c.Seconds); Equal(d.MicFilter, c.MicFilter); Equal(d.ClipsFolder, c.ClipsFolder); Equal("", c.FfmpegPath);
+            });
+            Run("config: config.example.txt is the default config", () =>
+            {
+                var c = Config.Parse(File.ReadAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.example.txt")));
+                var d = Config.Defaults();
+                Equal(d.Hotkey, c.Hotkey); Equal(d.Seconds, c.Seconds); Equal(d.Fps, c.Fps); Equal(d.BitrateMbps, c.BitrateMbps);
+                Equal(d.Codec, c.Codec); Equal(d.Monitor, c.Monitor); Equal(d.GameAudio, c.GameAudio); Equal(d.Mic, c.Mic);
+                Equal(d.MicFilter, c.MicFilter); Equal(d.AudioOffsetMs, c.AudioOffsetMs); Equal(d.ClipsFolder, c.ClipsFolder); Equal(d.FfmpegPath, c.FfmpegPath);
             });
             Run("config: values, inline comments and case", () =>
             {
@@ -89,6 +98,16 @@ namespace Rewind.Tests
                 Equal("4,5,6", string.Join(",", recent));
                 Equal(0, ring.Snapshot(TimeSpan.FromSeconds(1), t0.AddSeconds(60)).Length);
             });
+            Run("ring: chunks are the ring's own arrays, oldest first", () =>
+            {
+                var ring = new ChunkRing(TimeSpan.FromSeconds(60));
+                var t0 = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+                ring.Add(new byte[] { 1 }, 1, t0);
+                ring.Add(new byte[] { 2 }, 1, t0.AddSeconds(10));
+                var chunks = ring.Chunks(TimeSpan.FromSeconds(30), t0.AddSeconds(10));
+                Equal(2, chunks.Count); Equal((byte)1, chunks[0].Data[0]); Equal((byte)2, chunks[1].Data[0]);
+                Equal(1, ring.Chunks(TimeSpan.FromSeconds(5), t0.AddSeconds(10)).Count);
+            });
             Run("ring: partial add copies only count bytes", () =>
             {
                 var ring = new ChunkRing(TimeSpan.FromSeconds(1));
@@ -105,6 +124,51 @@ namespace Rewind.Tests
             Run("ring: bad count is refused", () => Throws<ArgumentOutOfRangeException>(() => new ChunkRing(TimeSpan.FromSeconds(1)).Add(new byte[2], 3, DateTime.UtcNow)));
             Run("ring: zero window is refused", () => Throws<ArgumentOutOfRangeException>(() => new ChunkRing(TimeSpan.Zero)));
 
+            var pat = TsPacket(0, true, false, Pat(4096));
+            var pmt = TsPacket(4096, true, false, Pmt(new byte[] { 0x1b, 0x0f }, new[] { 256, 257 }));
+            Run("tscut: cuts at the first video keyframe after PAT+PMT, across chunk edges", () =>
+            {
+                var junk = new byte[] { 1, 2, 3, 4, 5, 6, 7 };            // the torn tail of an evicted packet
+                var frame = TsPacket(256, true, false, Payload(0xAA));    // a P-frame: not a cut
+                var audioKey = TsPacket(257, true, true, Payload(0xBB));  // audio marks every packet: not a cut
+                var key = TsPacket(256, true, true, Payload(0xCC));       // the keyframe
+                var rest = TsPacket(256, false, false, Payload(0xDD));
+                var all = Join(junk, pat, pmt, frame, audioKey, key, rest, rest, rest);
+                var plan = TsCut.Plan(Split(all, 100, 400));
+                True(plan.Clean, "clean cut");
+                Equal(7L + 188 * 4, plan.TrimmedBytes);
+                Equal(2, plan.StartChunk); Equal(259, plan.StartOffset);
+                Equal(BitConverter.ToString(Join(pat, pmt)), BitConverter.ToString(plan.Prefix));
+            });
+            Run("tscut: a keyframe before the tables waits for the next one", () =>
+            {
+                var key = TsPacket(256, true, true, Payload(1));
+                var plan = TsCut.Plan(Split(Join(pat, key, pmt, key, key), 1000));
+                True(plan.Clean, "clean cut"); Equal(188L * 3, plan.TrimmedBytes);
+            });
+            Run("tscut: no keyframe means a raw cut from byte 0", () =>
+            {
+                var frame = TsPacket(256, true, false, Payload(9));
+                var plan = TsCut.Plan(Split(Join(pat, pmt, frame, frame, frame), 300));
+                True(!plan.Clean, "raw cut"); Equal(0, plan.StartChunk); Equal(0, plan.StartOffset);
+                Equal(0, plan.Prefix.Length); Equal(0L, plan.TrimmedBytes);
+            });
+            Run("tscut: too little data is a raw cut, not a crash", () =>
+            {
+                True(!TsCut.Plan(new List<Chunk>()).Clean, "empty");
+                True(!TsCut.Plan(Split(new byte[100], 50)).Clean, "tiny");
+            });
+            Run("tscut: video pid comes from the stream type; private data (av1) beats audio", () =>
+            {
+                var pmtAudioFirst = TsPacket(4096, true, false, Pmt(new byte[] { 0x0f, 0x24 }, new[] { 300, 301 }));
+                var audio = TsPacket(300, true, true, Payload(1));
+                var video = TsPacket(301, true, true, Payload(2));
+                Equal(188L * 3, TsCut.Plan(Split(Join(pat, pmtAudioFirst, audio, video, video), 1000)).TrimmedBytes);
+                var pmtAv1 = TsPacket(4096, true, false, Pmt(new byte[] { 0x0f, 0x06 }, new[] { 300, 302 }));
+                var av1 = TsPacket(302, true, true, Payload(3));
+                Equal(188L * 3, TsCut.Plan(Split(Join(pat, pmtAv1, audio, av1, av1), 1000)).TrimmedBytes);
+            });
+
             Run("ffmpeg: capture line has every piece", () =>
             {
                 var c = Config.Parse("seconds=30\nfps=60\nbitrate_mbps=20");
@@ -115,8 +179,8 @@ namespace Rewind.Tests
                 };
                 var a = FfmpegArgs.Capture(c, 2, audio);
                 Contains(a, "-f lavfi -i \"ddagrab=output_idx=2:framerate=60:draw_mouse=1:output_fmt=8bit\"");
-                Contains(a, "-f f32le -ar 48000 -ac 2 -i \"\\\\.\\pipe\\rewind_game\"");
-                Contains(a, "-f s16le -ar 44100 -ac 1 -i \"\\\\.\\pipe\\rewind_mic\"");
+                Contains(a, "-f f32le -ar 48000 -ac 2 -ch_layout stereo -i \"\\\\.\\pipe\\rewind_game\"");
+                Contains(a, "-f s16le -ar 44100 -ac 1 -ch_layout mono -i \"\\\\.\\pipe\\rewind_mic\"");
                 Contains(a, "-map 0:v -map 1:a -map 2:a");
                 Contains(a, "-c:v h264_nvenc -preset p5 -tune hq -profile:v high -rc cbr -b:v 20M -maxrate 20M -bufsize 40M -g 60 -forced-idr 1");
                 Contains(a, "-filter:a:1 \"afftdn=nr=12:nf=-40\"");
@@ -141,12 +205,12 @@ namespace Rewind.Tests
                 Contains(FfmpegArgs.Capture(Config.Parse("codec=av1"), 0, new AudioSource[0]), "-c:v av1_nvenc -preset p5 -tune hq -rc cbr");
                 Contains(FfmpegArgs.Capture(Config.Parse("codec=hevc"), 0, new AudioSource[0]), "-c:v hevc_nvenc -preset p5 -tune hq -profile:v main -rc cbr");
             });
-            Run("ffmpeg: remux line", () =>
+            Run("ffmpeg: remux line reads the ring from stdin", () =>
             {
-                var a = FfmpegArgs.Remux(@"C:\x\a.ts", @"C:\x\Rewind clip.mp4", new[] { "Game", "Mic" }, "h264");
-                Contains(a, "-y -i \"C:\\x\\a.ts\" -map 0:v -map 0:a? -c copy -metadata:s:a:0 title=\"Game\" -metadata:s:a:1 title=\"Mic\" -movflags +faststart \"C:\\x\\Rewind clip.mp4\"");
+                var a = FfmpegArgs.Remux(@"C:\x\Rewind clip.mp4", new[] { "Game", "Mic" }, "h264");
+                Contains(a, "-loglevel error -nostdin -y -f mpegts -i pipe:0 -map 0:v -map 0:a? -c copy -metadata:s:a:0 title=\"Game\" -metadata:s:a:1 title=\"Mic\" -movflags +faststart \"C:\\x\\Rewind clip.mp4\"");
                 True(!a.Contains("hvc1"), "no hvc1 tag for h264");
-                Contains(FfmpegArgs.Remux("a.ts", "b.mp4", new string[0], "hevc"), "-c copy -tag:v hvc1 ");
+                Contains(FfmpegArgs.Remux("b.mp4", new string[0], "hevc"), "-c copy -tag:v hvc1 ");
             });
             Run("ffmpeg: quoting escapes inner quotes", () => Equal("\"a\\\"b\"", FfmpegArgs.Quote("a\"b")));
             Run("ffmpeg: audio source validates its format", () =>
@@ -168,6 +232,89 @@ namespace Rewind.Tests
             Console.WriteLine();
             Console.WriteLine(string.Format("{0} passed, {1} failed", _passed, _failed));
             return _failed == 0 ? 0 : 1;
+        }
+
+        // ---- synthetic MPEG-TS packets for the TsCut tests ----
+
+        /// <summary>A 188-byte packet with an adaptation field (carrying the RAI flag) and a short payload.</summary>
+        private static byte[] TsPacket(int pid, bool pusi, bool rai, byte[] payload)
+        {
+            if (payload.Length > 182) throw new ArgumentException("payload too long for one packet");
+            var packet = new byte[188];
+            packet[0] = 0x47;
+            packet[1] = (byte)((pusi ? 0x40 : 0) | (pid >> 8));
+            packet[2] = (byte)(pid & 0xff);
+            packet[3] = 0x30; // adaptation field + payload
+            var afLength = 188 - 4 - 1 - payload.Length;
+            packet[4] = (byte)afLength;
+            packet[5] = (byte)(rai ? 0x40 : 0x00);
+            for (var i = 6; i < 5 + afLength; i++) packet[i] = 0xff;
+            Buffer.BlockCopy(payload, 0, packet, 5 + afLength, payload.Length);
+            return packet;
+        }
+
+        private static byte[] Payload(byte fill)
+        {
+            var bytes = new byte[100];
+            for (var i = 0; i < bytes.Length; i++) bytes[i] = fill;
+            return bytes;
+        }
+
+        private static byte[] Pat(int pmtPid)
+        {
+            return new byte[]
+            {
+                0x00,                   // pointer field
+                0x00, 0xB0, 0x0D,       // table id, section length 13
+                0x00, 0x01, 0xC1, 0x00, 0x00,
+                0x00, 0x01, (byte)(0xE0 | (pmtPid >> 8)), (byte)(pmtPid & 0xff),
+                0, 0, 0, 0              // crc (not checked)
+            };
+        }
+
+        private static byte[] Pmt(byte[] types, int[] pids)
+        {
+            var section = new List<byte> { 0x00, 0x02, 0x00, 0x00, 0x00, 0x01, 0xC1, 0x00, 0x00, 0xE1, 0x00, 0xF0, 0x00 };
+            for (var i = 0; i < types.Length; i++)
+                section.AddRange(new[] { types[i], (byte)(0xE0 | (pids[i] >> 8)), (byte)(pids[i] & 0xff), (byte)0xF0, (byte)0x00 });
+            section.AddRange(new byte[] { 0, 0, 0, 0 });
+            var length = section.Count - 4; // everything after the length field
+            section[2] = (byte)(0xB0 | (length >> 8));
+            section[3] = (byte)(length & 0xff);
+            return section.ToArray();
+        }
+
+        private static byte[] Join(params byte[][] parts)
+        {
+            var total = 0;
+            foreach (var part in parts) total += part.Length;
+            var all = new byte[total];
+            var at = 0;
+            foreach (var part in parts) { Buffer.BlockCopy(part, 0, all, at, part.Length); at += part.Length; }
+            return all;
+        }
+
+        /// <summary>Chops bytes into chunks of the given sizes; the last chunk takes whatever is left.</summary>
+        private static IList<Chunk> Split(byte[] all, params int[] sizes)
+        {
+            var chunks = new List<Chunk>();
+            var at = 0;
+            foreach (var size in sizes)
+            {
+                var take = Math.Min(size, all.Length - at);
+                if (take <= 0) break;
+                var data = new byte[take];
+                Buffer.BlockCopy(all, at, data, 0, take);
+                chunks.Add(new Chunk(DateTime.UtcNow, data));
+                at += take;
+            }
+            if (at < all.Length)
+            {
+                var data = new byte[all.Length - at];
+                Buffer.BlockCopy(all, at, data, 0, data.Length);
+                chunks.Add(new Chunk(DateTime.UtcNow, data));
+            }
+            return chunks;
         }
 
         // ---- the tiniest test harness ----

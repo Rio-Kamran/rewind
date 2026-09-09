@@ -74,25 +74,36 @@ namespace Rewind
             }
         }
 
-        /// <summary>A fresh byte array holding everything received in the last span. Empty if nothing.</summary>
-        public byte[] Snapshot(TimeSpan span, DateTime nowUtc)
+        /// <summary>
+        /// The chunks received in the last span, oldest first. Chunks are immutable, so this hands
+        /// out references: nothing is copied, and the list stays valid however the ring moves on.
+        /// </summary>
+        public IList<Chunk> Chunks(TimeSpan span, DateTime nowUtc)
         {
             var cutoff = nowUtc - span;
             lock (_gate)
             {
-                long total = 0;
-                foreach (var chunk in _chunks) if (chunk.AtUtc >= cutoff) total += chunk.Data.Length;
-
-                var result = new byte[total];
-                var offset = 0;
-                foreach (var chunk in _chunks)
-                {
-                    if (chunk.AtUtc < cutoff) continue;
-                    Buffer.BlockCopy(chunk.Data, 0, result, offset, chunk.Data.Length);
-                    offset += chunk.Data.Length;
-                }
-                return result;
+                var result = new List<Chunk>(_chunks.Count);
+                foreach (var chunk in _chunks) if (chunk.AtUtc >= cutoff) result.Add(chunk);
+                return result.AsReadOnly();
             }
+        }
+
+        /// <summary>A fresh byte array holding everything received in the last span. Empty if nothing.</summary>
+        public byte[] Snapshot(TimeSpan span, DateTime nowUtc)
+        {
+            var chunks = Chunks(span, nowUtc);
+            long total = 0;
+            foreach (var chunk in chunks) total += chunk.Data.Length;
+
+            var result = new byte[total];
+            var offset = 0;
+            foreach (var chunk in chunks)
+            {
+                Buffer.BlockCopy(chunk.Data, 0, result, offset, chunk.Data.Length);
+                offset += chunk.Data.Length;
+            }
+            return result;
         }
 
         public void Clear()

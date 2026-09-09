@@ -60,7 +60,8 @@ namespace Rewind
                 "ddagrab=output_idx={0}:framerate={1}:draw_mouse=1:output_fmt=8bit", outputIndex, config.Fps);
             sb.Append("-f lavfi -i ").Append(Quote(graph)).Append(' ');
 
-            // Audio: raw PCM over named pipes, paced to wall-clock by AudioTap.
+            // Audio: raw PCM over named pipes, paced to wall-clock by AudioTap. Naming the channel
+            // layout saves ffmpeg guessing it (and saying so in the log) on every start.
             foreach (var source in audio)
             {
                 if (config.AudioOffsetMs != 0)
@@ -68,8 +69,9 @@ namespace Rewind
                       .Append((config.AudioOffsetMs / 1000.0).ToString("0.###", CultureInfo.InvariantCulture))
                       .Append(' ');
                 sb.Append(string.Format(CultureInfo.InvariantCulture,
-                    "-thread_queue_size 4096 -f {0} -ar {1} -ac {2} -i {3} ",
-                    source.SampleFormat, source.SampleRate, source.Channels, Quote(@"\\.\pipe\" + source.PipeName)));
+                    "-thread_queue_size 4096 -f {0} -ar {1} -ac {2}{3} -i {4} ",
+                    source.SampleFormat, source.SampleRate, source.Channels, ChannelLayout(source.Channels),
+                    Quote(@"\\.\pipe\" + source.PipeName)));
             }
 
             sb.Append("-map 0:v ");
@@ -90,6 +92,16 @@ namespace Rewind
             return sb.ToString();
         }
 
+        private static string ChannelLayout(int channels)
+        {
+            switch (channels)
+            {
+                case 1: return " -ch_layout mono";
+                case 2: return " -ch_layout stereo";
+                default: return "";
+            }
+        }
+
         private static string VideoEncoder(Config config)
         {
             string encoder, profile;
@@ -107,19 +119,16 @@ namespace Rewind
         }
 
         /// <summary>
-        /// Turns a dumped slice of the ring into an MP4 without re-encoding. ffmpeg drops video
-        /// packets before the first keyframe on its own when stream-copying, so the cut is clean.
+        /// Wraps MPEG-TS arriving on stdin in an MP4 without re-encoding. The bytes start at a
+        /// keyframe (TsCut), so there is nothing for the parser to complain about.
         /// </summary>
-        public static string Remux(string tsPath, string mp4Path, IList<string> audioLabels, string codec)
+        public static string Remux(string mp4Path, IList<string> audioLabels, string codec)
         {
-            if (string.IsNullOrEmpty(tsPath)) throw new ArgumentException("tsPath");
             if (string.IsNullOrEmpty(mp4Path)) throw new ArgumentException("mp4Path");
             if (audioLabels == null) throw new ArgumentNullException("audioLabels");
 
             var sb = new StringBuilder();
-            // error, not warning: the parser always grumbles about the few frames before the first
-            // keyframe, which are the ones it is supposed to throw away.
-            sb.Append("-hide_banner -loglevel error -nostdin -y -i ").Append(Quote(tsPath)).Append(' ');
+            sb.Append("-hide_banner -loglevel error -nostdin -y -f mpegts -i pipe:0 ");
             sb.Append("-map 0:v -map 0:a? -c copy ");
             if (codec == "hevc") sb.Append("-tag:v hvc1 "); // the tag Apple players insist on
             for (var i = 0; i < audioLabels.Count; i++)

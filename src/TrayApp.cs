@@ -170,7 +170,7 @@ namespace Rewind
             if (_hotkeyWindow == null)
             {
                 _hotkeyWindow = new HotkeyWindow();
-                _hotkeyWindow.Pressed += (s, e) => SaveClip("hotkey");
+                _hotkeyWindow.Pressed += (s, e) => SaveClip("hotkey", _config.Seconds);
             }
             string error;
             if (_hotkeyWindow.Register(spec, out error))
@@ -195,7 +195,7 @@ namespace Rewind
                 {
                     var fired = WaitHandle.WaitAny(signals, 500);
                     if (_disposed) break;
-                    if (fired == 0) SaveClip("--save");
+                    if (fired == 0) SaveClip("--save", _config.Seconds);
                     else if (fired == 1)
                     {
                         Log.Info("quit from --quit");
@@ -209,7 +209,7 @@ namespace Rewind
 
         // ---- saving ----
 
-        public void SaveClip(string reason)
+        public void SaveClip(string reason, int seconds)
         {
             var recorder = _recorder;
             if (recorder == null || recorder.Paused)
@@ -233,9 +233,10 @@ namespace Rewind
             {
                 try
                 {
-                    var clip = ClipSaver.Save(ring, config, ffmpeg, labels);
-                    Log.Info(string.Format("clip saved ({0}): {1} ({2:0.0} MB, buffer held {3:0} s)",
-                        reason, clip.Path, clip.Bytes / 1048576.0, clip.Buffered.TotalSeconds));
+                    var clip = ClipSaver.Save(ring, config, ffmpeg, labels, seconds);
+                    Log.Info(string.Format("clip saved ({0}, {1} s): {2} ({3:0.0} MB, buffer held {4:0} s, {5})",
+                        reason, seconds, clip.Path, clip.Bytes / 1048576.0, clip.Buffered.TotalSeconds,
+                        clip.CleanCut ? "clean cut at keyframe, " + clip.TrimmedBytes / 1024 + " KB trimmed" : "raw cut, no keyframe found"));
                     OnUi(() =>
                     {
                         SystemSounds.Asterisk.Play();
@@ -250,8 +251,6 @@ namespace Rewind
                 finally
                 {
                     Interlocked.Exchange(ref _saving, 0);
-                    // The snapshot was a ~150 MB array; hand it back now rather than whenever.
-                    GC.Collect();
                 }
             }) { IsBackground = true, Name = "rewind-save" };
             worker.Start();
@@ -265,7 +264,7 @@ namespace Rewind
             _pausedIcon = DrawIcon(Color.FromArgb(120, 120, 120));
 
             var menu = new ContextMenuStrip();
-            _saveItem = new ToolStripMenuItem("Save clip now", null, (s, e) => SaveClip("menu"));
+            _saveItem = new ToolStripMenuItem("Save clip now", null, (s, e) => SaveClip("menu", _config.Seconds));
             _saveItem.Font = new Font(_saveItem.Font, FontStyle.Bold);
             _pauseItem = new ToolStripMenuItem("Pause recording", null, (s, e) => TogglePause());
             menu.Items.Add(_saveItem);
@@ -286,7 +285,7 @@ namespace Rewind
                 ContextMenuStrip = menu,
                 Visible = true
             };
-            _icon.DoubleClick += (s, e) => SaveClip("double-click");
+            _icon.DoubleClick += (s, e) => SaveClip("double-click", _config.Seconds);
         }
 
         private static Icon DrawIcon(Color fill)
