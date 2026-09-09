@@ -291,6 +291,62 @@ namespace Rewind.Tests
                 True(TapSpec.From(Config.Parse("mic=off"))[0].Loopback, "game audio is loopback");
             });
 
+            Run("clips: names parse into game, time and suffix", () =>
+            {
+                string game, suffix;
+                DateTime taken;
+                True(ClipLibrary.TryParseName("Rewind Fortnite 2026-09-08 18-20-32.mp4", out game, out taken, out suffix), "parses");
+                Equal("Fortnite", game); Equal(new DateTime(2026, 9, 8, 18, 20, 32), taken); Equal("", suffix);
+                True(ClipLibrary.TryParseName("Rewind 2026-09-08 18-20-32 trim 2.mp4", out game, out taken, out suffix), "no game");
+                Equal("", game); Equal("trim 2", suffix);
+                True(ClipLibrary.TryParseName("Rewind Rocket League 2026-09-08 18-20-32 trim.mp4", out game, out taken, out suffix), "spaces in the game");
+                Equal("Rocket League", game); Equal("trim", suffix);
+                True(!ClipLibrary.TryParseName("holiday.mp4", out game, out taken, out suffix), "other files");
+            });
+            Run("clips: describe falls back to the file time; title says Desktop", () =>
+            {
+                var when = new DateTime(2026, 1, 2, 3, 4, 5);
+                var c = ClipLibrary.Describe(@"C:\v\holiday.mp4", 10, when);
+                Equal(when, c.Taken); Equal("Desktop", c.Title); Equal("holiday.mp4", c.FileName); True(!c.Duration.HasValue, "unknown length");
+                var named = ClipLibrary.Describe(@"C:\v\Rewind Fortnite 2026-09-08 18-20-32 trim.mp4", 10, when);
+                Equal("Fortnite (trim)", named.Title); Equal(new DateTime(2026, 9, 8, 18, 20, 32), named.Taken);
+                Equal(TimeSpan.FromSeconds(3), named.WithDuration(TimeSpan.FromSeconds(3)).Duration.Value);
+            });
+            Run("clips: copy name numbers itself past existing files", () =>
+            {
+                var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { @"C:\v\a trim.mp4", @"C:\v\a trim 2.mp4" };
+                Equal(@"C:\v\a trim 3.mp4", ClipLibrary.CopyName(@"C:\v\a.mp4", "trim", taken.Contains));
+                Equal(@"C:\v\b trim.mp4", ClipLibrary.CopyName(@"C:\v\b.mp4", "trim", taken.Contains));
+            });
+            Run("probe: duration is read from ffmpeg's log", () =>
+            {
+                Equal(TimeSpan.FromSeconds(60.46), ClipProbe.ParseDuration("Input #0, mov\n  Duration: 00:01:00.46, start: 0.000000, bitrate: 19 kb/s").Value);
+                Equal(TimeSpan.FromSeconds(3725.5), ClipProbe.ParseDuration("Duration: 01:02:05.50").Value);
+                True(!ClipProbe.ParseDuration("Duration: N/A").HasValue, "n/a");
+                True(!ClipProbe.ParseDuration("").HasValue, "empty");
+            });
+            Run("probe: thumb key follows the file", () =>
+            {
+                var t = new DateTime(2026, 1, 1);
+                var a = ClipProbe.ThumbKey(@"C:\v\a.mp4", 10, t);
+                Equal(a, ClipProbe.ThumbKey(@"c:\V\A.MP4", 10, t)); Equal(40, a.Length);
+                True(a != ClipProbe.ThumbKey(@"C:\v\a.mp4", 11, t), "size changes it");
+                True(a != ClipProbe.ThumbKey(@"C:\v\a.mp4", 10, t.AddSeconds(1)), "time changes it");
+            });
+            Run("probe: ffmpeg lines", () =>
+            {
+                Contains(ClipProbe.ThumbArgs(@"C:\v\a.mp4", @"C:\t\k.jpg"), "-ss 0.5 -i \"C:\\v\\a.mp4\" -frames:v 1 -vf scale=320:-2 -q:v 4 \"C:\\t\\k.jpg\"");
+                Contains(ClipProbe.FrameArgs(@"C:\v\a.mp4", 12.345), "-ss 12.345 -i \"C:\\v\\a.mp4\" -frames:v 1 -vf scale=640:-2 -f image2pipe -c:v mjpeg -q:v 4 pipe:1");
+            });
+            Run("ffmpeg: trim re-encodes the video and copies the audio", () =>
+            {
+                var a = FfmpegArgs.Trim(@"C:\v\a.mp4", @"C:\v\a trim.mp4", 12.5, 8, Config.Parse("bitrate_mbps=20"));
+                Contains(a, "-y -ss 12.5 -t 8 -i \"C:\\v\\a.mp4\" -map 0:v -map 0:a? -c:v h264_nvenc -preset p5 -tune hq -profile:v high -rc cbr -b:v 20M -maxrate 20M -bufsize 40M -c:a copy -movflags +faststart \"C:\\v\\a trim.mp4\"");
+                True(!a.Contains("-g "), "no keyframe cadence on a trim");
+                Contains(FfmpegArgs.Trim("a.mp4", "b.mp4", 0, 1, Config.Parse("codec=hevc")), "-tag:v hvc1 -c:a copy");
+                Throws<ArgumentOutOfRangeException>(() => FfmpegArgs.Trim("a", "b", 0, 0, Config.Parse("")));
+            });
+
             Run("shell: explorer gets /select with a quoted path", () =>
                 Equal("/select,\"C:\\x\\a b.mp4\"", Shell.SelectInExplorerArgs(@"C:\x\a b.mp4")));
 

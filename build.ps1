@@ -5,7 +5,7 @@ $root = $PSScriptRoot
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path $csc)) { throw "C# compiler not found at $csc" }
 
-$refs = @('/r:System.dll', '/r:System.Core.dll', '/r:System.Drawing.dll', '/r:System.Windows.Forms.dll')
+$refs = @('/r:System.dll', '/r:System.Core.dll', '/r:System.Drawing.dll', '/r:System.Windows.Forms.dll', '/r:Microsoft.VisualBasic.dll')
 $src = Get-ChildItem (Join-Path $root 'src\*.cs') | ForEach-Object { $_.FullName }
 
 # Tray icon file for the exe itself (Explorer, Start menu); the tray icon is drawn at runtime.
@@ -30,7 +30,7 @@ Write-Host "Building Rewind.exe"
 if ($LASTEXITCODE -ne 0) { throw "Rewind.exe build failed" }
 
 Write-Host "Building rewind-tests.exe"
-$testSrc = $src | Where-Object { $_ -notmatch '\\(Program|TrayApp|HotkeyWindow)\.cs$' }
+$testSrc = $src | Where-Object { $_ -notmatch '\\(Program|TrayApp|HotkeyWindow|ClipsForm|SettingsTab|TrimForm)\.cs$' }
 & $csc /nologo /target:exe /optimize+ /warn:4 "/out:$root\rewind-tests.exe" $refs $testSrc (Join-Path $root 'tests\Tests.cs')
 if ($LASTEXITCODE -ne 0) { throw "tests build failed" }
 

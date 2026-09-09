@@ -1,9 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
 using System.Media;
+using System.Text;
 using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
@@ -15,7 +17,7 @@ namespace Rewind
     /// "--save" signals from other processes, the game watch, the audio-device retry, and the
     /// balloon that says a clip landed.
     /// </summary>
-    internal sealed class TrayApp : IDisposable
+    internal sealed class TrayApp : IDisposable, IRewindControl
     {
         private const int MaxTooltipLength = 63; // NotifyIcon.Text refuses anything longer
         private const int TickMs = 2000;
@@ -38,11 +40,14 @@ namespace Rewind
         private EventWaitHandle _saveEvent;
         private EventWaitHandle _saveShortEvent;
         private EventWaitHandle _quitEvent;
+        private EventWaitHandle _showEvent;
         private Thread _signalThread;
+        private ClipsForm _window;
         private System.Windows.Forms.Timer _tickTimer;
         private System.Windows.Forms.Timer _probeTimer;
         private Action _balloonAction;
         private DateTime _lastGameSeenUtc = DateTime.MinValue;
+        private string _lastInFront = "";
         private bool _probing;
         private volatile bool _disposed;
 
@@ -54,7 +59,10 @@ namespace Rewind
         }
 
         public Config Config { get { return _config; } }
+        public string FfmpegPath { get { return _ffmpeg; } }
         public SessionStatus Status { get { return _session != null ? _session.Status : null; } }
+        public bool UserPaused { get { return _session != null && _session.UserPaused; } }
+        public event Action<SavedClip> ClipSaved;
 
         /// <summary>False (after telling the user why) when Rewind can't run at all.</summary>
         public bool Start()
@@ -91,6 +99,11 @@ namespace Rewind
             BuildTray();
             _session = new CaptureSession(_config, _ffmpeg);
             _session.AudioMissing += OnAudioMissing;
+            _session.ClipSaved += clip => OnUi(() =>
+            {
+                var handler = ClipSaved;
+                if (handler != null) handler(clip);
+            });
             if (_config.GamesOnly)
             {
                 // Decided before Start so no ffmpeg spins up for nothing.
@@ -138,6 +151,17 @@ namespace Rewind
             }
             ApplyConfig(fresh);
             Balloon("Config reloaded", string.Format("{0} s clips, hotkey {1}", _config.Seconds, HotkeySpec.Parse(_config.Hotkey).Text), ToolTipIcon.Info);
+        }
+
+        /// <summary>The window's Apply: validate, write config.txt with its comments, restart capture.</summary>
+        public void SaveSettings(IDictionary<string, string> values)
+        {
+            if (values == null) throw new ArgumentNullException("values");
+            var text = Config.Text(values);
+            var fresh = Config.Parse(text); // throws ConfigException with a message meant for the screen
+            File.WriteAllText(_configPath, text, Encoding.UTF8);
+            Log.Info("settings saved from the window");
+            ApplyConfig(fresh);
         }
 
         /// <summary>Puts a new config live: the pipeline restarts (buffer starts empty), hotkeys re-register.</summary>
@@ -190,7 +214,8 @@ namespace Rewind
             _saveEvent = new EventWaitHandle(false, EventResetMode.AutoReset, Program.SaveEventName, out created);
             _saveShortEvent = new EventWaitHandle(false, EventResetMode.AutoReset, Program.SaveShortEventName, out created);
             _quitEvent = new EventWaitHandle(false, EventResetMode.AutoReset, Program.QuitEventName, out created);
-            var signals = new WaitHandle[] { _saveEvent, _saveShortEvent, _quitEvent };
+            _showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, Program.ShowEventName, out created);
+            var signals = new WaitHandle[] { _saveEvent, _saveShortEvent, _showEvent, _quitEvent };
             _signalThread = new Thread(() =>
             {
                 while (!_disposed)
@@ -199,7 +224,8 @@ namespace Rewind
                     if (_disposed) break;
                     if (fired == 0) SaveClip("--save", _config.Seconds);
                     else if (fired == 1) SaveClip("--save-short", _config.ShortSeconds);
-                    else if (fired == 2)
+                    else if (fired == 2) OnUi(ShowWindow);
+                    else if (fired == 3)
                     {
                         Log.Info("quit from --quit");
                         OnUi(Quit);
@@ -229,12 +255,24 @@ namespace Rewind
             if (result == SaveStart.Paused)
             {
                 var why = _session.PauseReason.Length > 0 ? _session.PauseReason : "not running";
+                Log.Info("save (" + reason + ") ignored: " + why);
                 OnUi(() => Balloon("Not recording", "Rewind is " + why + ", so there's nothing to save.", ToolTipIcon.Warning));
             }
             else if (result == SaveStart.Busy)
             {
                 OnUi(() => Balloon("Hold on", "Still saving the last clip.", ToolTipIcon.Info));
             }
+        }
+
+        // ---- the window ----
+
+        private void ShowWindow()
+        {
+            if (_disposed) return;
+            if (_window == null || _window.IsDisposed) _window = new ClipsForm(this, _appDir);
+            if (!_window.Visible) _window.Show();
+            if (_window.WindowState == FormWindowState.Minimized) _window.WindowState = FormWindowState.Normal;
+            _window.Activate();
         }
 
         // ---- game watch + audio retry (every 2 s / 15 s on the UI thread) ----
@@ -263,6 +301,12 @@ namespace Rewind
             {
                 if (_session.GamePaused) _session.SetGamePaused(false);
                 return;
+            }
+            if (info.ProcessName != _lastInFront)
+            {
+                // Only in games mode, only on a change: a line per app that comes to the front.
+                _lastInFront = info.ProcessName;
+                Log.Info("in front: " + GameDetector.Describe(info, _config.Games));
             }
             if (game && _session.GamePaused)
             {
@@ -323,6 +367,8 @@ namespace Rewind
             _saveItem.Font = new Font(_saveItem.Font, FontStyle.Bold);
             _saveShortItem = new ToolStripMenuItem("Save short clip", null, (s, e) => SaveClip("menu", _config.ShortSeconds));
             _pauseItem = new ToolStripMenuItem("Pause recording", null, (s, e) => TogglePause());
+            menu.Items.Add(new ToolStripMenuItem("Open Rewind  (clips + settings)", null, (s, e) => ShowWindow()));
+            menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(_saveItem);
             menu.Items.Add(_saveShortItem);
             menu.Items.Add(new ToolStripSeparator());
@@ -488,10 +534,16 @@ namespace Rewind
             if (_tickTimer != null) _tickTimer.Dispose();
             if (_probeTimer != null) _probeTimer.Dispose();
             if (_hotkeyWindow != null) _hotkeyWindow.Dispose();
+            if (_window != null)
+            {
+                _window.AllowClose();
+                _window.Dispose();
+            }
             if (_session != null) _session.Dispose();
             if (_saveEvent != null) _saveEvent.Dispose();
             if (_saveShortEvent != null) _saveShortEvent.Dispose();
             if (_quitEvent != null) _quitEvent.Dispose();
+            if (_showEvent != null) _showEvent.Dispose();
             if (_icon != null)
             {
                 _icon.Visible = false;

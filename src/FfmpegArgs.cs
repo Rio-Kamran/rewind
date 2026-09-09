@@ -104,6 +104,14 @@ namespace Rewind
 
         private static string VideoEncoder(Config config)
         {
+            // One keyframe per second (-g fps, forced IDR): a clip can start at most one second
+            // after where the buffer starts, and every second boundary is a clean cut point.
+            return string.Format(CultureInfo.InvariantCulture, "{0} -g {1} -forced-idr 1", EncoderBase(config), config.Fps);
+        }
+
+        /// <summary>The NVENC encoder and rate settings from the config, without the keyframe cadence.</summary>
+        private static string EncoderBase(Config config)
+        {
             string encoder, profile;
             switch (config.Codec)
             {
@@ -111,11 +119,32 @@ namespace Rewind
                 case "av1": encoder = "av1_nvenc"; profile = ""; break;
                 default: encoder = "h264_nvenc"; profile = "-profile:v high "; break;
             }
-            // One keyframe per second (-g fps, forced IDR): a clip can start at most one second
-            // after where the buffer starts, and every second boundary is a clean cut point.
             return string.Format(CultureInfo.InvariantCulture,
-                "-c:v {0} -preset p5 -tune hq {1}-rc cbr -b:v {2}M -maxrate {2}M -bufsize {3}M -g {4} -forced-idr 1",
-                encoder, profile, config.BitrateMbps, config.BitrateMbps * 2, config.Fps);
+                "-c:v {0} -preset p5 -tune hq {1}-rc cbr -b:v {2}M -maxrate {2}M -bufsize {3}M",
+                encoder, profile, config.BitrateMbps, config.BitrateMbps * 2);
+        }
+
+        /// <summary>
+        /// A frame-exact copy of one stretch of a clip: the video is re-encoded on NVENC (a cut on
+        /// a keyframe boundary would be up to a second off), the audio tracks are copied as-is.
+        /// </summary>
+        public static string Trim(string inputPath, string outputPath, double startSeconds, double lengthSeconds, Config config)
+        {
+            if (string.IsNullOrEmpty(inputPath)) throw new ArgumentException("inputPath");
+            if (string.IsNullOrEmpty(outputPath)) throw new ArgumentException("outputPath");
+            if (config == null) throw new ArgumentNullException("config");
+            if (startSeconds < 0) throw new ArgumentOutOfRangeException("startSeconds");
+            if (lengthSeconds <= 0) throw new ArgumentOutOfRangeException("lengthSeconds");
+
+            var sb = new StringBuilder();
+            sb.Append("-hide_banner -loglevel error -nostdin -y ");
+            sb.Append("-ss ").Append(startSeconds.ToString("0.###", CultureInfo.InvariantCulture)).Append(' ');
+            sb.Append("-t ").Append(lengthSeconds.ToString("0.###", CultureInfo.InvariantCulture)).Append(' ');
+            sb.Append("-i ").Append(Quote(inputPath)).Append(' ');
+            sb.Append("-map 0:v -map 0:a? ").Append(EncoderBase(config)).Append(' ');
+            if (config.Codec == "hevc") sb.Append("-tag:v hvc1 ");
+            sb.Append("-c:a copy -movflags +faststart ").Append(Quote(outputPath));
+            return sb.ToString();
         }
 
         /// <summary>

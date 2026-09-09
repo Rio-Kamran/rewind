@@ -10,7 +10,8 @@ namespace Rewind
     /// Rewind: a replay buffer for the main monitor. Runs in the tray; the hotkey (Ctrl+Alt+P by
     /// default) saves the last N seconds as an MP4 with game audio and mic on separate tracks.
     ///
-    ///   Rewind.exe               start (one copy only; a second start just says so)
+    ///   Rewind.exe               start (one copy only; a second start opens the window)
+    ///   Rewind.exe --clips       open the clips window of the running Rewind
     ///   Rewind.exe --save        tell the running Rewind to save a clip (Stream Deck, scripts)
     ///   Rewind.exe --save-short  the same, but only the last short_seconds
     ///   Rewind.exe --quit        stop the running Rewind
@@ -22,6 +23,7 @@ namespace Rewind
         public const string SaveEventName = "Local\\Rewind.SaveClip";
         public const string SaveShortEventName = "Local\\Rewind.SaveShortClip";
         public const string QuitEventName = "Local\\Rewind.Quit";
+        public const string ShowEventName = "Local\\Rewind.Show";
 
         [STAThread]
         private static int Main(string[] args)
@@ -35,10 +37,11 @@ namespace Rewind
             if (mode == "--save") return Signal(SaveEventName, "Rewind isn't running, so there's nothing to save.");
             if (mode == "--save-short") return Signal(SaveShortEventName, "Rewind isn't running, so there's nothing to save.");
             if (mode == "--quit") return Signal(QuitEventName, null);
+            if (mode == "--clips") return Signal(ShowEventName, "Rewind isn't running. Start it first, then open the window.");
             if (mode == "--list") return ShowDevices();
             if (mode.Length > 0)
             {
-                MessageBox.Show("Rewind.exe               start in the tray\nRewind.exe --save        save a clip from the running Rewind\nRewind.exe --save-short  save a short clip\nRewind.exe --quit        stop the running Rewind\nRewind.exe --list        list monitors and audio devices",
+                MessageBox.Show("Rewind.exe               start in the tray (or open the window if it's running)\nRewind.exe --clips       open the clips window\nRewind.exe --save        save a clip from the running Rewind\nRewind.exe --save-short  save a short clip\nRewind.exe --quit        stop the running Rewind\nRewind.exe --list        list monitors and audio devices",
                     "Rewind");
                 return 0;
             }
@@ -48,8 +51,8 @@ namespace Rewind
             {
                 if (!created)
                 {
-                    MessageBox.Show("Rewind is already running: look for the red dot in the tray.", "Rewind");
-                    return 1;
+                    // Already running: a second start just opens its window.
+                    return Signal(ShowEventName, "Rewind is already running: look for the red dot in the tray.");
                 }
 
                 Application.ThreadException += (s, e) => Log.Error("unhandled: " + e.Exception);
@@ -115,6 +118,23 @@ namespace Rewind
                         sb.AppendLine(probe.Label + " audio: " + error.Message);
                     }
                 }
+            }
+
+            try
+            {
+                var config = Config.Load(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.txt"));
+                var inFront = GameDetector.Describe(ForegroundApp.Probe(), config.Games);
+                Log.Info("--list, in front: " + inFront);
+                sb.AppendLine();
+                sb.AppendLine("In front right now: " + inFront);
+            }
+            catch (ConfigException error)
+            {
+                sb.AppendLine("config.txt has a problem: " + error.Message);
+            }
+            catch (IOException error)
+            {
+                sb.AppendLine("Couldn't read config.txt: " + error.Message);
             }
 
             MessageBox.Show(sb.ToString(), "Rewind: devices");
