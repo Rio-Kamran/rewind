@@ -335,7 +335,7 @@ namespace Rewind.Tests
             });
             Run("probe: ffmpeg lines", () =>
             {
-                Contains(ClipProbe.ThumbArgs(@"C:\v\a.mp4", @"C:\t\k.jpg"), "-ss 0.5 -i \"C:\\v\\a.mp4\" -frames:v 1 -vf scale=320:-2 -q:v 4 \"C:\\t\\k.jpg\"");
+                Contains(ClipProbe.ThumbArgs(@"C:\v\a.mp4", @"C:\t\k.jpg"), "-ss 0.5 -i \"C:\\v\\a.mp4\" -frames:v 1 -vf scale=480:-2 -q:v 4 \"C:\\t\\k.jpg\"");
                 Contains(ClipProbe.FrameArgs(@"C:\v\a.mp4", 12.345), "-ss 12.345 -i \"C:\\v\\a.mp4\" -frames:v 1 -vf scale=640:-2 -f image2pipe -c:v mjpeg -q:v 4 pipe:1");
             });
             Run("ffmpeg: trim re-encodes the video and copies the audio", () =>

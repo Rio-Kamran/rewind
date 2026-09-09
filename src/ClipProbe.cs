@@ -30,7 +30,7 @@ namespace Rewind
     /// </summary>
     internal static class ClipProbe
     {
-        public const int ThumbWidth = 320;
+        public const int ThumbWidth = 480; // tiles stretch to ~350-560 px, so the source must not be tiny
         public const int PreviewWidth = 640;
         private const int TimeoutMs = 20000;
         private static readonly Regex DurationPattern = new Regex(@"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", RegexOptions.CultureInvariant);
@@ -51,7 +51,8 @@ namespace Rewind
         public static string ThumbKey(string path, long bytes, DateTime lastWriteUtc)
         {
             if (string.IsNullOrEmpty(path)) throw new ArgumentException("path");
-            var text = path.ToLowerInvariant() + "|" + bytes.ToString(CultureInfo.InvariantCulture) + "|" + lastWriteUtc.Ticks.ToString(CultureInfo.InvariantCulture);
+            var text = path.ToLowerInvariant() + "|" + bytes.ToString(CultureInfo.InvariantCulture) + "|"
+                + lastWriteUtc.Ticks.ToString(CultureInfo.InvariantCulture) + "|w" + ThumbWidth.ToString(CultureInfo.InvariantCulture);
             using (var sha = SHA1.Create())
             {
                 var hash = sha.ComputeHash(Encoding.UTF8.GetBytes(text));

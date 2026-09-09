@@ -30,7 +30,7 @@ Write-Host "Building Rewind.exe"
 if ($LASTEXITCODE -ne 0) { throw "Rewind.exe build failed" }
 
 Write-Host "Building rewind-tests.exe"
-$testSrc = $src | Where-Object { $_ -notmatch '\\(Program|TrayApp|HotkeyWindow|ClipsForm|SettingsTab|TrimForm)\.cs$' }
+$testSrc = $src | Where-Object { $_ -notmatch '\\(Program|TrayApp|HotkeyWindow|ClipsForm|ClipGrid|SettingsTab|TrimForm)\.cs$' }
 & $csc /nologo /target:exe /optimize+ /warn:4 "/out:$root\rewind-tests.exe" $refs $testSrc (Join-Path $root 'tests\Tests.cs')
 if ($LASTEXITCODE -ne 0) { throw "tests build failed" }
 

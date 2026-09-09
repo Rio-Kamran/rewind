@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
-using System.Drawing.Drawing2D;
 using System.IO;
 using System.Threading;
 using System.Windows.Forms;
@@ -11,20 +10,17 @@ using Microsoft.VisualBasic;
 namespace Rewind
 {
     /// <summary>
-    /// The Rewind window: a thumbnail grid of every clip (newest first, grouped by day) with
-    /// play / show / rename / delete / trim, a live status strip with the save and pause buttons,
-    /// and a Settings tab. Built in code; closing it only hides it.
+    /// The Rewind window: a thumbnail grid of every clip (newest first, grouped by day, tiles
+    /// stretched to fill the width) with play / show / rename / delete / trim, a live status strip
+    /// with the save and pause buttons, and a Settings tab. Built in code; closing it only hides it.
     /// </summary>
     internal sealed class ClipsForm : Form
     {
         private const string AllGames = "All games";
-        private const string PlaceholderKey = "placeholder";
-        private static readonly Size ThumbSize = new Size(256, 144);
 
         private readonly IRewindControl _control;
         private readonly string _thumbFolder;
-        private readonly ListView _list = new ListView();
-        private readonly ImageList _thumbs = new ImageList();
+        private readonly ClipGrid _grid = new ClipGrid();
         private readonly ComboBox _gameFilter = new ComboBox();
         private readonly Label _status = new Label();
         private readonly Label _detail = new Label();
@@ -131,7 +127,6 @@ namespace Rewind
                 _deleteArmTimer.Dispose();
                 _watchTimer.Dispose();
                 if (_watcher != null) _watcher.Dispose();
-                _thumbs.Dispose();
             }
             base.Dispose(disposing);
         }
@@ -156,7 +151,7 @@ namespace Rewind
             _gameFilter.DropDownStyle = ComboBoxStyle.DropDownList;
             _gameFilter.Width = 180;
             _gameFilter.Margin = new Padding(16, 3, 0, 0);
-            _gameFilter.SelectedIndexChanged += (s, e) => FillList();
+            _gameFilter.SelectedIndexChanged += (s, e) => FillGrid();
             top.Controls.AddRange(new Control[] { _status, _saveButton, _saveShortButton, _pauseButton, openFolder, refresh, _gameFilter });
 
             var bottom = new Panel { Dock = DockStyle.Bottom, Height = 78, Padding = new Padding(8, 6, 8, 6) };
@@ -173,26 +168,16 @@ namespace Rewind
             bottom.Controls.Add(_detail);
             bottom.Controls.Add(actions);
 
-            _thumbs.ColorDepth = ColorDepth.Depth32Bit;
-            _thumbs.ImageSize = ThumbSize;
-            _thumbs.Images.Add(PlaceholderKey, Placeholder());
-            _list.Dock = DockStyle.Fill;
-            _list.View = View.LargeIcon;
-            _list.LargeImageList = _thumbs;
-            _list.MultiSelect = false;
-            _list.HideSelection = false;
-            _list.ShowGroups = true;
-            _list.ShowItemToolTips = true;
-            _list.BorderStyle = BorderStyle.None;
-            _list.SelectedIndexChanged += (s, e) => { DisarmDelete(); UpdateDetail(); };
-            _list.ItemActivate += (s, e) => Play();
-            _list.KeyDown += (s, e) =>
+            _grid.Dock = DockStyle.Fill;
+            _grid.SelectionChanged += (s, e) => { DisarmDelete(); UpdateDetail(); };
+            _grid.ItemActivated += (s, e) => Play();
+            _grid.KeyDown += (s, e) =>
             {
                 if (e.KeyCode == Keys.Delete) { DeleteFlow(); e.Handled = true; }
                 else if (e.KeyCode == Keys.F2) { Rename(); e.Handled = true; }
             };
 
-            page.Controls.Add(_list);
+            page.Controls.Add(_grid);
             page.Controls.Add(top);
             page.Controls.Add(bottom);
         }
@@ -206,30 +191,17 @@ namespace Rewind
             button.Click += onClick;
         }
 
-        private static Image Placeholder()
-        {
-            var bitmap = new Bitmap(ThumbSize.Width, ThumbSize.Height);
-            using (var g = Graphics.FromImage(bitmap))
-            {
-                g.SmoothingMode = SmoothingMode.AntiAlias;
-                g.Clear(Color.FromArgb(48, 48, 52));
-                using (var brush = new SolidBrush(Color.FromArgb(120, 120, 128)))
-                    g.FillPolygon(brush, new[] { new Point(108, 48), new Point(158, 72), new Point(108, 96) });
-            }
-            return bitmap;
-        }
-
-        // ---- the list ----
+        // ---- the grid ----
 
         private void RefreshClips()
         {
             if (IsDisposed) return;
             var folder = _control.Config.ClipsFolder;
-            try { Directory.CreateDirectory(folder); } catch (Exception) { /* shown as an empty list */ }
+            try { Directory.CreateDirectory(folder); } catch (Exception) { /* shown as an empty grid */ }
             WatchFolder(folder);
             _clips = ClipLibrary.Scan(folder);
             FillGameFilter();
-            FillList();
+            FillGrid();
         }
 
         private void WatchFolder(string folder)
@@ -281,50 +253,22 @@ namespace Rewind
             _gameFilter.EndUpdate();
         }
 
-        private void FillList()
+        private void FillGrid()
         {
             var filter = _gameFilter.SelectedItem as string ?? AllGames;
-            var selected = SelectedClip();
-            var selectedPath = selected != null ? selected.Path : null;
-
-            _list.BeginUpdate();
-            _list.Items.Clear();
-            _list.Groups.Clear();
-            var groups = new Dictionary<string, ListViewGroup>();
+            var selected = _grid.Selected;
+            var shown = new List<ClipInfo>();
             foreach (var clip in _clips)
             {
                 var title = clip.Game.Length > 0 ? clip.Game : "Desktop";
                 if (filter != AllGames && !string.Equals(filter, title, StringComparison.OrdinalIgnoreCase)) continue;
-
-                var day = DayLabel(clip.Taken);
-                ListViewGroup group;
-                if (!groups.TryGetValue(day, out group))
-                {
-                    group = new ListViewGroup(day);
-                    groups[day] = group;
-                    _list.Groups.Add(group);
-                }
-                var item = new ListViewItem(clip.Title + "   " + clip.Taken.ToString("HH:mm"), group)
-                {
-                    Tag = clip,
-                    ImageKey = _thumbs.Images.ContainsKey(clip.Path) ? clip.Path : PlaceholderKey,
-                    ToolTipText = Describe(clip)
-                };
-                _list.Items.Add(item);
-                if (clip.Path == selectedPath) item.Selected = true;
-                if (!_thumbs.Images.ContainsKey(clip.Path)) Enqueue(clip);
+                shown.Add(clip);
+                if (!_grid.HasThumbnail(clip.Path)) Enqueue(clip);
             }
-            _list.EndUpdate();
-            if (_list.SelectedItems.Count == 0 && _list.Items.Count > 0) _list.Items[0].Selected = true;
-            UpdateDetail();
-        }
-
-        private static string DayLabel(DateTime taken)
-        {
-            var today = DateTime.Today;
-            if (taken.Date == today) return "Today";
-            if (taken.Date == today.AddDays(-1)) return "Yesterday";
-            return taken.ToString(taken.Year == today.Year ? "ddd d MMM" : "ddd d MMM yyyy");
+            _grid.EmptyText = _clips.Count == 0
+                ? "No clips yet.\nPress " + HotkeySpec.Parse(_control.Config.Hotkey).Text + " while something happens."
+                : "No clips from " + filter + ".";
+            _grid.SetClips(shown.AsReadOnly(), selected != null ? selected.Path : null);
         }
 
         private static string Describe(ClipInfo clip)
@@ -341,16 +285,11 @@ namespace Rewind
                 : string.Format("{0:0.0} s", duration.TotalSeconds);
         }
 
-        private ClipInfo SelectedClip()
-        {
-            return _list.SelectedItems.Count > 0 ? _list.SelectedItems[0].Tag as ClipInfo : null;
-        }
-
         private void UpdateDetail()
         {
-            var clip = SelectedClip();
+            var clip = _grid.Selected;
             var have = clip != null;
-            _detail.Text = have ? Describe(clip) : (_list.Items.Count == 0 ? "No clips yet. Press " + HotkeySpec.Parse(_control.Config.Hotkey).Text + " while something happens." : "No clip selected.");
+            _detail.Text = have ? Describe(clip) : (_grid.Count == 0 ? "No clips to show." : "No clip selected.");
             _playButton.Enabled = _showButton.Enabled = _renameButton.Enabled = _deleteButton.Enabled = _trimButton.Enabled = have;
         }
 
@@ -406,25 +345,15 @@ namespace Rewind
         private void ApplyProbe(ClipInfo clip, ProbeResult result, Image image)
         {
             if (IsDisposed) { if (image != null) image.Dispose(); return; }
-            if (image != null)
-            {
-                if (_thumbs.Images.ContainsKey(clip.Path)) _thumbs.Images.RemoveByKey(clip.Path);
-                _thumbs.Images.Add(clip.Path, image);
-                image.Dispose(); // the list keeps its own copy
-            }
-            var updated = result.Duration.HasValue ? clip.WithDuration(result.Duration.Value) : clip;
+            if (image != null) _grid.SetThumbnail(clip.Path, image);
+            if (!result.Duration.HasValue) return;
+            var updated = clip.WithDuration(result.Duration.Value);
             var clips = new List<ClipInfo>(_clips.Count);
             foreach (var existing in _clips) clips.Add(existing.Path == clip.Path ? updated : existing);
             _clips = clips.AsReadOnly();
-            foreach (ListViewItem item in _list.Items)
-            {
-                var tagged = item.Tag as ClipInfo;
-                if (tagged == null || tagged.Path != clip.Path) continue;
-                if (image != null) item.ImageKey = clip.Path;
-                item.Tag = updated;
-                item.ToolTipText = Describe(updated);
-            }
-            UpdateDetail();
+            _grid.UpdateClip(updated);
+            var selected = _grid.Selected;
+            if (selected != null && selected.Path == clip.Path) UpdateDetail();
         }
 
         // ---- status strip ----
@@ -447,7 +376,7 @@ namespace Rewind
 
         private void Play()
         {
-            var clip = SelectedClip();
+            var clip = _grid.Selected;
             if (clip == null) return;
             try { Process.Start(new ProcessStartInfo(clip.Path) { UseShellExecute = true }); }
             catch (Exception error) { Say("Couldn't play it: " + error.Message); }
@@ -455,7 +384,7 @@ namespace Rewind
 
         private void ShowInFolder()
         {
-            var clip = SelectedClip();
+            var clip = _grid.Selected;
             if (clip == null) return;
             try { Process.Start("explorer.exe", Shell.SelectInExplorerArgs(clip.Path)); }
             catch (Exception error) { Say("Couldn't open the folder: " + error.Message); }
@@ -473,7 +402,7 @@ namespace Rewind
 
         private void Rename()
         {
-            var clip = SelectedClip();
+            var clip = _grid.Selected;
             if (clip == null) return;
             var stem = Path.GetFileNameWithoutExtension(clip.Path);
             var wanted = Interaction.InputBox("New name for the clip (without .mp4):", "Rename clip", stem).Trim();
@@ -486,7 +415,7 @@ namespace Rewind
                 File.Move(clip.Path, target);
                 Log.Info("renamed " + clip.FileName + " -> " + Path.GetFileName(target));
                 RefreshClips();
-                Select(target);
+                _grid.Select(target);
             }
             catch (Exception error) { Say("Couldn't rename it: " + error.Message); }
         }
@@ -494,7 +423,7 @@ namespace Rewind
         /// <summary>First click arms the button for three seconds; the second click deletes, to the Recycle Bin.</summary>
         private void DeleteFlow()
         {
-            var clip = SelectedClip();
+            var clip = _grid.Selected;
             if (clip == null) return;
             if (!_deleteArmed)
             {
@@ -525,27 +454,13 @@ namespace Rewind
 
         private void Trim()
         {
-            var clip = SelectedClip();
+            var clip = _grid.Selected;
             if (clip == null) return;
             using (var dialog = new TrimForm(_control, clip, _thumbFolder))
             {
                 if (dialog.ShowDialog(this) != DialogResult.OK || dialog.SavedPath == null) return;
                 RefreshClips();
-                Select(dialog.SavedPath);
-            }
-        }
-
-        private void Select(string path)
-        {
-            foreach (ListViewItem item in _list.Items)
-            {
-                var clip = item.Tag as ClipInfo;
-                if (clip != null && string.Equals(clip.Path, path, StringComparison.OrdinalIgnoreCase))
-                {
-                    item.Selected = true;
-                    item.EnsureVisible();
-                    return;
-                }
+                _grid.Select(dialog.SavedPath);
             }
         }
 
