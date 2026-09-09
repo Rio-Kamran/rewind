@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -12,23 +11,25 @@ using Microsoft.Win32;
 namespace Rewind
 {
     /// <summary>
-    /// The tray icon and everything hanging off it: the capture pipeline, the hotkeys, the
-    /// "--save" signals from other processes, and the balloon that says a clip landed.
+    /// The tray icon and everything hanging off it: the capture session, the hotkeys, the
+    /// "--save" signals from other processes, the game watch, the audio-device retry, and the
+    /// balloon that says a clip landed.
     /// </summary>
     internal sealed class TrayApp : IDisposable
     {
         private const int MaxTooltipLength = 63; // NotifyIcon.Text refuses anything longer
+        private const int TickMs = 2000;
+        private const int ProbeMs = 15000;
 
         private readonly string _appDir;
         private readonly string _configPath;
         private Config _config;
         private string _ffmpeg;
-        private ChunkRing _ring;
-        private List<AudioTap> _taps = new List<AudioTap>();
-        private Recorder _recorder;
+        private CaptureSession _session;
         private NotifyIcon _icon;
         private Icon _recordingIcon;
         private Icon _pausedIcon;
+        private Icon _waitingIcon;
         private ToolStripMenuItem _saveItem;
         private ToolStripMenuItem _saveShortItem;
         private ToolStripMenuItem _pauseItem;
@@ -37,12 +38,12 @@ namespace Rewind
         private EventWaitHandle _saveEvent;
         private EventWaitHandle _saveShortEvent;
         private EventWaitHandle _quitEvent;
-        private Thread _saveSignalThread;
-        private System.Windows.Forms.Timer _tooltipTimer;
+        private Thread _signalThread;
+        private System.Windows.Forms.Timer _tickTimer;
+        private System.Windows.Forms.Timer _probeTimer;
         private Action _balloonAction;
-        private int _saving;
-        private bool _userPaused;
-        private bool _lockPaused;
+        private DateTime _lastGameSeenUtc = DateTime.MinValue;
+        private bool _probing;
         private volatile bool _disposed;
 
         public TrayApp(string appDir)
@@ -51,6 +52,9 @@ namespace Rewind
             _appDir = appDir;
             _configPath = Path.Combine(appDir, "config.txt");
         }
+
+        public Config Config { get { return _config; } }
+        public SessionStatus Status { get { return _session != null ? _session.Status : null; } }
 
         /// <summary>False (after telling the user why) when Rewind can't run at all.</summary>
         public bool Start()
@@ -85,59 +89,35 @@ namespace Rewind
             GC.KeepAlive(forceHandle);
 
             BuildTray();
-            OpenPipeline();
+            _session = new CaptureSession(_config, _ffmpeg);
+            _session.AudioMissing += OnAudioMissing;
+            if (_config.GamesOnly)
+            {
+                // Decided before Start so no ffmpeg spins up for nothing.
+                var info = ForegroundApp.Probe();
+                var game = GameDetector.IsGame(info, _config.Games);
+                _session.SetGamePaused(!game);
+                Log.Info(game ? "record=games: game in front (" + info.ProcessName + "), recording" : "record=games: no game in front, waiting for one");
+            }
+            _session.Start();
             RegisterHotkeys();
-            StartSaveSignal();
+            StartSignals();
             SystemEvents.SessionSwitch += OnSessionSwitch;
 
-            _tooltipTimer = new System.Windows.Forms.Timer { Interval = 2000 };
-            _tooltipTimer.Tick += (s, e) => RefreshTooltip();
-            _tooltipTimer.Start();
+            _tickTimer = new System.Windows.Forms.Timer { Interval = TickMs };
+            _tickTimer.Tick += (s, e) => Tick();
+            _tickTimer.Start();
+            _probeTimer = new System.Windows.Forms.Timer { Interval = ProbeMs };
+            _probeTimer.Tick += (s, e) => ProbeMissingAudio();
+            _probeTimer.Start();
 
-            Log.Info(string.Format("Rewind started: {0} s buffer, {1} fps, {2} Mbps {3}, hotkey {4}, short clip {5} s on {6}, clips -> {7}",
+            Log.Info(string.Format("Rewind started: {0} s buffer, {1} fps, {2} Mbps {3}, hotkey {4}, short clip {5} s on {6}, record={7}, clips -> {8}",
                 _config.Seconds, _config.Fps, _config.BitrateMbps, _config.Codec, _config.Hotkey,
-                _config.ShortSeconds, _config.HotkeyShort.Length > 0 ? _config.HotkeyShort : "(no key)", _config.ClipsFolder));
+                _config.ShortSeconds, _config.HotkeyShort.Length > 0 ? _config.HotkeyShort : "(no key)", _config.Record, _config.ClipsFolder));
             return true;
         }
 
-        // ---- pipeline ----
-
-        private void OpenPipeline()
-        {
-            _ring = new ChunkRing(TimeSpan.FromSeconds(_config.Seconds + 2));
-            _taps = new List<AudioTap>();
-            if (_config.GameAudio) OpenTap("Game", "rewind_game", true, "");
-            if (_config.Mic) OpenTap("Mic", "rewind_mic", false, _config.MicFilter);
-            _recorder = new Recorder(_config, _ring, _ffmpeg, _taps);
-            _recorder.Start();
-        }
-
-        private void OpenTap(string label, string pipeName, bool loopback, string filter)
-        {
-            var tap = new AudioTap(label, pipeName, loopback, filter);
-            try
-            {
-                tap.Open(TimeSpan.FromSeconds(5));
-                _taps.Add(tap);
-            }
-            catch (InvalidOperationException error)
-            {
-                tap.Dispose();
-                Log.Warn(error.Message);
-                Balloon("No " + label.ToLowerInvariant() + " audio", error.Message + " Clips will be saved without it.", ToolTipIcon.Warning);
-            }
-        }
-
-        private void ClosePipeline()
-        {
-            if (_recorder != null)
-            {
-                _recorder.Dispose();
-                _recorder = null;
-            }
-            foreach (var tap in _taps) tap.Dispose();
-            _taps = new List<AudioTap>();
-        }
+        // ---- config ----
 
         private void ReloadConfig()
         {
@@ -156,17 +136,23 @@ namespace Rewind
                 Balloon("config.txt not reloaded", error.Message, ToolTipIcon.Error);
                 return;
             }
-
-            Log.Info("reloading config");
-            ClosePipeline();
-            _config = fresh;
-            OpenPipeline();
-            RegisterHotkeys();
-            if (_userPaused) _recorder.Pause();
+            ApplyConfig(fresh);
             Balloon("Config reloaded", string.Format("{0} s clips, hotkey {1}", _config.Seconds, HotkeySpec.Parse(_config.Hotkey).Text), ToolTipIcon.Info);
         }
 
-        // ---- hotkeys + external save signals ----
+        /// <summary>Puts a new config live: the pipeline restarts (buffer starts empty), hotkeys re-register.</summary>
+        public void ApplyConfig(Config fresh)
+        {
+            if (fresh == null) throw new ArgumentNullException("fresh");
+            Log.Info("reloading config");
+            _config = fresh;
+            _session.Rebuild(fresh);
+            RegisterHotkeys();
+            WatchGame();
+            RefreshTooltip();
+        }
+
+        // ---- hotkeys + external signals ----
 
         private void RegisterHotkeys()
         {
@@ -180,9 +166,7 @@ namespace Rewind
                 };
             }
 
-            var main = HotkeySpec.Parse(_config.Hotkey);
-            _saveItem.Text = "Save clip now  (" + Register(0, main) + ")";
-
+            _saveItem.Text = "Save clip now  (" + Register(0, HotkeySpec.Parse(_config.Hotkey)) + ")";
             _saveShortItem.Text = "Save last " + _config.ShortSeconds + " s";
             if (_config.HotkeyShort.Length > 0)
                 _saveShortItem.Text += "  (" + Register(1, HotkeySpec.Parse(_config.HotkeyShort)) + ")";
@@ -200,14 +184,14 @@ namespace Rewind
             return "no hotkey";
         }
 
-        private void StartSaveSignal()
+        private void StartSignals()
         {
             bool created;
             _saveEvent = new EventWaitHandle(false, EventResetMode.AutoReset, Program.SaveEventName, out created);
             _saveShortEvent = new EventWaitHandle(false, EventResetMode.AutoReset, Program.SaveShortEventName, out created);
             _quitEvent = new EventWaitHandle(false, EventResetMode.AutoReset, Program.QuitEventName, out created);
             var signals = new WaitHandle[] { _saveEvent, _saveShortEvent, _quitEvent };
-            _saveSignalThread = new Thread(() =>
+            _signalThread = new Thread(() =>
             {
                 while (!_disposed)
                 {
@@ -223,59 +207,107 @@ namespace Rewind
                     }
                 }
             }) { IsBackground = true, Name = "rewind-signals" };
-            _saveSignalThread.Start();
+            _signalThread.Start();
         }
 
         // ---- saving ----
 
         public void SaveClip(string reason, int seconds)
         {
-            var recorder = _recorder;
-            if (recorder == null || recorder.Paused)
+            var config = _config;
+            var result = _session.SaveAsync(seconds, reason,
+                clip => OnUi(() =>
+                {
+                    SystemSounds.Asterisk.Play();
+                    var title = seconds == config.Seconds ? "Clip saved" : "Clip saved (" + seconds + " s)";
+                    Balloon(title, Path.GetFileName(clip.Path) + "\nClick to show it in the folder.", ToolTipIcon.Info,
+                        () => ShowInFolder(clip.Path));
+                }),
+                error => OnUi(() => Balloon("Clip NOT saved", error.Message + "\nClick to open the log.", ToolTipIcon.Error,
+                    () => OpenFile(Log.Path))));
+
+            if (result == SaveStart.Paused)
             {
-                OnUi(() => Balloon("Not recording", "Rewind is paused, so there's nothing to save.", ToolTipIcon.Warning));
-                return;
+                var why = _session.PauseReason.Length > 0 ? _session.PauseReason : "not running";
+                OnUi(() => Balloon("Not recording", "Rewind is " + why + ", so there's nothing to save.", ToolTipIcon.Warning));
             }
-            if (Interlocked.CompareExchange(ref _saving, 1, 0) != 0)
+            else if (result == SaveStart.Busy)
             {
                 OnUi(() => Balloon("Hold on", "Still saving the last clip.", ToolTipIcon.Info));
+            }
+        }
+
+        // ---- game watch + audio retry (every 2 s / 15 s on the UI thread) ----
+
+        private void Tick()
+        {
+            if (_disposed) return;
+            WatchGame();
+            RefreshTooltip();
+        }
+
+        private bool GameInFront()
+        {
+            return GameDetector.IsGame(ForegroundApp.Probe(), _config.Games);
+        }
+
+        /// <summary>In games mode: record while a game is in front, pause once it has been gone for the grace period.</summary>
+        private void WatchGame()
+        {
+            var info = ForegroundApp.Probe();
+            var game = GameDetector.IsGame(info, _config.Games);
+            var now = DateTime.UtcNow;
+            if (game) _lastGameSeenUtc = now;
+
+            if (!_config.GamesOnly)
+            {
+                if (_session.GamePaused) _session.SetGamePaused(false);
                 return;
             }
+            if (game && _session.GamePaused)
+            {
+                Log.Info("game in front (" + info.ProcessName + "): recording");
+                _session.SetGamePaused(false);
+            }
+            else if (!game && !_session.GamePaused && now - _lastGameSeenUtc > TimeSpan.FromSeconds(_config.GameGraceSeconds))
+            {
+                Log.Info("no game in front for " + _config.GameGraceSeconds + " s: waiting for one");
+                _session.SetGamePaused(true);
+            }
+        }
 
-            var labels = new List<string>();
-            foreach (var tap in _taps) labels.Add(tap.Label);
-            var config = _config;
-            var ffmpeg = _ffmpeg;
-            var ring = _ring;
-
+        private void ProbeMissingAudio()
+        {
+            if (_disposed || _probing || _session.MissingTaps.Count == 0) return;
+            _probing = true;
+            var session = _session;
             var worker = new Thread(() =>
             {
+                TapSpec found = null;
                 try
                 {
-                    var clip = ClipSaver.Save(ring, config, ffmpeg, labels, seconds);
-                    Log.Info(string.Format("clip saved ({0}, {1} s): {2} ({3:0.0} MB, buffer held {4:0} s, {5})",
-                        reason, seconds, clip.Path, clip.Bytes / 1048576.0, clip.Buffered.TotalSeconds,
-                        clip.CleanCut ? "clean cut at keyframe, " + clip.TrimmedBytes / 1024 + " KB trimmed" : "raw cut, no keyframe found"));
-                    OnUi(() =>
-                    {
-                        SystemSounds.Asterisk.Play();
-                        var title = seconds == config.Seconds ? "Clip saved" : "Clip saved (" + seconds + " s)";
-                        Balloon(title, Path.GetFileName(clip.Path) + "\nClick to show it in the folder.", ToolTipIcon.Info,
-                            () => ShowInFolder(clip.Path));
-                    });
+                    found = session.ProbeMissing();
                 }
                 catch (Exception error)
                 {
-                    Log.Error("clip save failed: " + error);
-                    OnUi(() => Balloon("Clip NOT saved", error.Message + "\nClick to open the log.", ToolTipIcon.Error,
-                        () => OpenFile(Log.Path)));
+                    Log.Warn("audio device check failed: " + error.Message);
                 }
-                finally
+                OnUi(() =>
                 {
-                    Interlocked.Exchange(ref _saving, 0);
-                }
-            }) { IsBackground = true, Name = "rewind-save" };
+                    _probing = false;
+                    if (found == null || _disposed) return;
+                    Log.Info(found.Label + " audio is back; restarting capture with it");
+                    _session.Rebuild(_config);
+                    Balloon(found.Label + " audio connected", "Clips now include it.", ToolTipIcon.Info);
+                });
+            }) { IsBackground = true, Name = "rewind-audio-probe" };
             worker.Start();
+        }
+
+        private void OnAudioMissing(TapSpec spec, string message)
+        {
+            Balloon("No " + spec.Label.ToLowerInvariant() + " audio",
+                message + " Clips will be saved without it; Rewind keeps checking for it.", ToolTipIcon.Warning);
         }
 
         // ---- tray ----
@@ -284,6 +316,7 @@ namespace Rewind
         {
             _recordingIcon = DrawIcon(Color.FromArgb(230, 40, 40));
             _pausedIcon = DrawIcon(Color.FromArgb(120, 120, 120));
+            _waitingIcon = DrawIcon(Color.FromArgb(235, 160, 30));
 
             var menu = new ContextMenuStrip();
             _saveItem = new ToolStripMenuItem("Save clip now", null, (s, e) => SaveClip("menu", _config.Seconds));
@@ -335,41 +368,36 @@ namespace Rewind
 
         private void RefreshTooltip()
         {
-            var recorder = _recorder;
-            var ring = _ring;
-            if (_icon == null || recorder == null || ring == null) return;
-            var text = string.Format("Rewind: {0}, {1:0} s buffered ({2:0} MB)",
-                recorder.Status, ring.Span.TotalSeconds, ring.Bytes / 1048576.0);
+            if (_icon == null || _session == null) return;
+            var status = _session.Status;
+            var text = string.Format("Rewind: {0}, {1:0} s buffered ({2:0} MB)", status.Text, status.BufferedSeconds, status.BufferedMb);
             if (text.Length > MaxTooltipLength) text = text.Substring(0, MaxTooltipLength);
             if (_icon.Text != text) _icon.Text = text;
-            var wanted = recorder.Paused ? _pausedIcon : _recordingIcon;
+            var wanted = status.PauseReason == "waiting for a game" ? _waitingIcon : status.Paused ? _pausedIcon : _recordingIcon;
             if (_icon.Icon != wanted) _icon.Icon = wanted;
         }
 
-        private void TogglePause()
+        public void TogglePause()
         {
-            if (_recorder == null) return;
-            _userPaused = !_userPaused;
-            if (_userPaused) _recorder.Pause(); else _recorder.Resume();
-            _pauseItem.Text = _userPaused ? "Resume recording" : "Pause recording";
-            Log.Info(_userPaused ? "paused by user" : "resumed by user");
+            var paused = !_session.UserPaused;
+            _session.SetUserPaused(paused);
+            _pauseItem.Text = paused ? "Resume recording" : "Pause recording";
+            Log.Info(paused ? "paused by user" : "resumed by user");
             RefreshTooltip();
         }
 
         private void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
         {
-            if (_recorder == null) return;
-            if (e.Reason == SessionSwitchReason.SessionLock && !_userPaused)
+            if (_session == null) return;
+            if (e.Reason == SessionSwitchReason.SessionLock)
             {
                 // Desktop Duplication can't see the lock screen anyway; stop trying until it's back.
-                _lockPaused = true;
-                _recorder.Pause();
+                _session.SetLockPaused(true);
                 Log.Info("paused: session locked");
             }
-            else if (e.Reason == SessionSwitchReason.SessionUnlock && _lockPaused)
+            else if (e.Reason == SessionSwitchReason.SessionUnlock && _session.LockPaused)
             {
-                _lockPaused = false;
-                if (!_userPaused) _recorder.Resume();
+                _session.SetLockPaused(false);
                 Log.Info("resumed: session unlocked");
             }
         }
@@ -457,9 +485,10 @@ namespace Rewind
             if (_disposed) return;
             _disposed = true;
             SystemEvents.SessionSwitch -= OnSessionSwitch;
-            if (_tooltipTimer != null) _tooltipTimer.Dispose();
+            if (_tickTimer != null) _tickTimer.Dispose();
+            if (_probeTimer != null) _probeTimer.Dispose();
             if (_hotkeyWindow != null) _hotkeyWindow.Dispose();
-            ClosePipeline();
+            if (_session != null) _session.Dispose();
             if (_saveEvent != null) _saveEvent.Dispose();
             if (_saveShortEvent != null) _saveShortEvent.Dispose();
             if (_quitEvent != null) _quitEvent.Dispose();

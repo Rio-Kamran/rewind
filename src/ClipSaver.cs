@@ -2,9 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.Runtime.InteropServices;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading;
 
 namespace Rewind
@@ -150,62 +148,6 @@ namespace Rewind
         {
             var lines = text.Split('\n');
             return lines.Length == 0 ? "" : lines[lines.Length - 1].Trim();
-        }
-    }
-
-    /// <summary>Names the app in the foreground window, cleaned up for use in a file name.</summary>
-    internal static class ForegroundApp
-    {
-        private const int MaxLength = 40;
-
-        [DllImport("user32.dll")]
-        private static extern IntPtr GetForegroundWindow();
-
-        [DllImport("user32.dll")]
-        private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
-
-        public static string Name()
-        {
-            try
-            {
-                var hwnd = GetForegroundWindow();
-                if (hwnd == IntPtr.Zero) return "";
-                uint pid;
-                GetWindowThreadProcessId(hwnd, out pid);
-                if (pid == 0) return "";
-                using (var process = Process.GetProcessById((int)pid)) return Clean(process.ProcessName);
-            }
-            catch (ArgumentException)
-            {
-                return ""; // the process closed between the two calls
-            }
-            catch (InvalidOperationException)
-            {
-                return "";
-            }
-            catch (System.ComponentModel.Win32Exception)
-            {
-                return ""; // a protected process we're not allowed to ask about
-            }
-        }
-
-        /// <summary>"FortniteClient-Win64-Shipping" -> "Fortnite", "javaw" -> "Minecraft", junk stripped.</summary>
-        public static string Clean(string processName)
-        {
-            if (string.IsNullOrEmpty(processName)) return "";
-            var name = processName;
-            foreach (var suffix in new[] { "Client-Win64-Shipping", "-Win64-Shipping", "_x64", "-x64", "64" })
-            {
-                if (name.Length > suffix.Length && name.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
-                {
-                    name = name.Substring(0, name.Length - suffix.Length);
-                    break;
-                }
-            }
-            if (name.Equals("javaw", StringComparison.OrdinalIgnoreCase) || name.Equals("java", StringComparison.OrdinalIgnoreCase))
-                name = "Minecraft";
-            name = Regex.Replace(name, "[^A-Za-z0-9 _-]", "");
-            return name.Length > MaxLength ? name.Substring(0, MaxLength) : name;
         }
     }
 }

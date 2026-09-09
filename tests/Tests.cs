@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.IO;
 using Rewind;
 
@@ -254,6 +255,40 @@ namespace Rewind.Tests
             {
                 Throws<ArgumentException>(() => new AudioSource("x", "p", "u8", 48000, 2, ""));
                 Throws<ArgumentOutOfRangeException>(() => new AudioSource("x", "p", "f32le", 100, 2, ""));
+            });
+
+            var monitor = new Rectangle(0, 0, 2560, 1440);
+            var none = new string[0];
+            Run("games: a listed process counts even in a small window", () =>
+                True(GameDetector.IsGame("JAVAW", new Rectangle(100, 100, 800, 600), monitor, true, new[] { "javaw" }), "listed, any case"));
+            Run("games: a fullscreen app with no title bar counts", () =>
+                True(GameDetector.IsGame("cs2", new Rectangle(0, 0, 2560, 1440), monitor, false, none), "fullscreen"));
+            Run("games: a maximized window with a title bar does not", () =>
+                True(!GameDetector.IsGame("chrome", new Rectangle(-8, -8, 2576, 1456), monitor, true, none), "maximized chrome"));
+            Run("games: the desktop and shell never count", () =>
+                True(!GameDetector.IsGame("explorer", new Rectangle(0, 0, 2560, 1440), monitor, false, none), "explorer"));
+            Run("games: a small window does not", () =>
+                True(!GameDetector.IsGame("cs2", new Rectangle(0, 0, 1280, 720), monitor, false, none), "small"));
+            Run("games: nothing in front is not a game", () => True(!GameDetector.IsGame(ForegroundInfo.None, new[] { "javaw" }), "none"));
+            Run("games: one pixel of slack on each edge", () =>
+            {
+                True(GameDetector.CoversMonitor(new Rectangle(1, 1, 2558, 1438), monitor), "1 px in");
+                True(!GameDetector.CoversMonitor(new Rectangle(2, 0, 2558, 1440), monitor), "2 px in");
+                True(!GameDetector.CoversMonitor(Rectangle.Empty, monitor), "empty");
+            });
+            Run("games: describe says why", () =>
+            {
+                Contains(GameDetector.Describe(new ForegroundInfo("chrome", new Rectangle(-8, -8, 2576, 1456), monitor, true), none), "title bar -> not a game");
+                Contains(GameDetector.Describe(new ForegroundInfo("javaw", new Rectangle(0, 0, 800, 600), monitor, true), new[] { "javaw" }), "on the games list -> counts as a game");
+                Equal("Nothing in front.", GameDetector.Describe(ForegroundInfo.None, none));
+            });
+            Run("taps: come from the config", () =>
+            {
+                Equal(2, TapSpec.From(Config.Parse("")).Count);
+                var micOnly = TapSpec.From(Config.Parse("game_audio=off"));
+                Equal(1, micOnly.Count); Equal("Mic", micOnly[0].Label); Equal("afftdn=nr=12:nf=-40", micOnly[0].Filter);
+                True(!micOnly[0].Loopback, "mic is a capture device");
+                True(TapSpec.From(Config.Parse("mic=off"))[0].Loopback, "game audio is loopback");
             });
 
             Run("shell: explorer gets /select with a quoted path", () =>
