@@ -316,6 +316,7 @@ namespace Rewind
                     if (_stopProbe) return;
                     clip = _probeQueue.Dequeue();
                 }
+                if (!WaitUntilWritten(clip.Path)) continue; // still growing after a minute, or gone: the next refresh retries
                 var result = ClipProbe.Probe(_control.FfmpegPath, clip, _thumbFolder);
                 Image image = null;
                 if (result.ThumbnailPath != null)
@@ -332,6 +333,27 @@ namespace Rewind
                     if (image != null) image.Dispose(); // the window is gone
                 }
             }
+        }
+
+        /// <summary>
+        /// A clip shows up in the folder the moment ffmpeg starts writing it; probing it then fails
+        /// with "invalid data". Wait until its size has held still for a second (a save takes ~1 s,
+        /// a trim a few). False when it never settles or disappears.
+        /// </summary>
+        private bool WaitUntilWritten(string path)
+        {
+            long last = -1;
+            for (var i = 0; i < 60 && !_stopProbe; i++)
+            {
+                long size;
+                try { size = new FileInfo(path).Length; }
+                catch (IOException) { return false; }
+                catch (UnauthorizedAccessException) { return false; }
+                if (size > 0 && size == last) return true;
+                last = size;
+                Thread.Sleep(1000);
+            }
+            return false;
         }
 
         /// <summary>Reads a JPEG without keeping the file locked.</summary>

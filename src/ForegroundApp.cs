@@ -90,10 +90,11 @@ namespace Rewind
             }
         }
 
-        /// <summary>"FortniteClient-Win64-Shipping" -> "Fortnite", "javaw" -> "Minecraft", junk stripped.</summary>
+        /// <summary>"FortniteClient-Win64-Shipping" -> "Fortnite", "javaw" -> "Minecraft", junk stripped; Rewind's own window is nobody.</summary>
         public static string Clean(string processName)
         {
             if (string.IsNullOrEmpty(processName)) return "";
+            if (processName.Equals("Rewind", StringComparison.OrdinalIgnoreCase)) return ""; // saved from the window: "Rewind Rewind ..." is silly
             var name = processName;
             foreach (var suffix in new[] { "Client-Win64-Shipping", "-Win64-Shipping", "_x64", "-x64", "64" })
             {

@@ -357,6 +357,7 @@ namespace Rewind.Tests
                 Equal("weirdname", ForegroundApp.Clean("weird<>:name"));
                 Equal("", ForegroundApp.Clean(""));
                 Equal("explorer", ForegroundApp.Clean("explorer"));
+                Equal("", ForegroundApp.Clean("Rewind")); // saved from Rewind's own window
                 Equal(40, ForegroundApp.Clean(new string('a', 80)).Length);
             });
 
