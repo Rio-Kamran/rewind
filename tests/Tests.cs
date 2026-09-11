@@ -77,7 +77,7 @@ namespace Rewind.Tests
                 var c = Config.Parse("hotkey=F9\nhotkey_short=shift+F9\nseconds=90\nshort_seconds=20\nfps=30\nbitrate_mbps=8\ncodec=hevc\nmonitor=1\n"
                     + "game_audio=off\nmic=off\nmic_filter=off\naudio_offset_ms=50\nclips=D:\\Clips\nffmpeg=C:\\ff\\ffmpeg.exe\nrecord=games\ngames=javaw, cs2.exe\ngame_grace_seconds=30");
                 var text = c.Text();
-                Contains(text, "# Where clips go." + Environment.NewLine + "clips=D:\\Clips" + Environment.NewLine);
+                Contains(text, "# Where clips go. Leave empty for your own Videos\\Rewind folder." + Environment.NewLine + "clips=D:\\Clips" + Environment.NewLine);
                 var back = Config.Parse(text);
                 Equal("F9", back.Hotkey); Equal("shift+F9", back.HotkeyShort); Equal(90, back.Seconds); Equal(20, back.ShortSeconds);
                 Equal(30, back.Fps); Equal(8, back.BitrateMbps); Equal("hevc", back.Codec); Equal("1", back.Monitor);
@@ -255,6 +255,14 @@ namespace Rewind.Tests
             {
                 Throws<ArgumentException>(() => new AudioSource("x", "p", "u8", 48000, 2, ""));
                 Throws<ArgumentOutOfRangeException>(() => new AudioSource("x", "p", "f32le", 100, 2, ""));
+            });
+
+            Run("config: empty clips folder means this user's Videos\\Rewind, and is written back empty", () =>
+            {
+                Equal(Config.Defaults().ClipsFolder, Config.Parse("clips=").ClipsFolder);
+                Equal(@"D:\clips", Config.Parse(@"clips=D:\clips").ClipsFolder);
+                Contains(Config.Text(Config.Defaults().Values()), "clips=" + Environment.NewLine);
+                Contains(Config.Text(Config.Parse(@"clips=D:\clips").Values()), @"clips=D:\clips");
             });
 
             var monitor = new Rectangle(0, 0, 2560, 1440);

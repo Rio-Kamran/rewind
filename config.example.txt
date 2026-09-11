@@ -46,8 +46,8 @@ games=javaw, FortniteClient-Win64-Shipping, RobloxPlayerBeta, RocketLeague, Geom
 # In games mode: how long a game can be out of front before recording pauses (5-600 s).
 game_grace_seconds=45
 
-# Where clips go.
-clips=C:\Users\RioMa\Videos\Rewind
+# Where clips go. Leave empty for your own Videos\Rewind folder.
+clips=
 
 # Leave empty to use the ffmpeg on PATH, or give a full path to ffmpeg.exe.
 ffmpeg=

@@ -153,7 +153,7 @@ namespace Rewind
             var grace = GetInt(values, "game_grace_seconds", d.GameGraceSeconds, MinGraceSeconds, MaxGraceSeconds);
 
             var clips = Get(values, "clips", d.ClipsFolder);
-            if (clips.Length == 0) throw new ConfigException("clips folder is empty.");
+            if (clips.Length == 0) clips = d.ClipsFolder; // empty = this user's Videos\Rewind, so config.example.txt carries no one's path
             if (clips.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
                 throw new ConfigException("clips folder has characters a path can't have: " + clips);
 
@@ -238,9 +238,15 @@ namespace Rewind
             Line(sb, values, d, "record", "always = record all the time. games = only while a game is in front (see games= below).");
             Line(sb, values, d, "games", "Apps that count as a game even in a window (process names, comma separated). Any app covering the whole monitor counts too.");
             Line(sb, values, d, "game_grace_seconds", "In games mode: how long a game can be out of front before recording pauses (5-600 s).");
-            Line(sb, values, d, "clips", "Where clips go.");
+            Line(sb, values, d, "clips", "Where clips go. Leave empty for your own Videos\\Rewind folder.");
             Line(sb, values, d, "ffmpeg", "Leave empty to use the ffmpeg on PATH, or give a full path to ffmpeg.exe.");
             return sb.ToString().TrimEnd() + Environment.NewLine;
+        }
+
+        /// <summary>The default clips folder is written as an empty value: the file then works on any PC.</summary>
+        private static string Shown(string key, string value, IDictionary<string, string> defaults)
+        {
+            return key == "clips" && string.Equals(value, defaults[key], StringComparison.OrdinalIgnoreCase) ? "" : value;
         }
 
         private static void Line(StringBuilder sb, IDictionary<string, string> values, IDictionary<string, string> defaults, string key, string comment)
@@ -248,7 +254,7 @@ namespace Rewind
             string value;
             if (!values.TryGetValue(key, out value) || value == null) value = defaults[key];
             sb.AppendLine("# " + comment);
-            sb.AppendLine(key + "=" + value.Trim());
+            sb.AppendLine(key + "=" + Shown(key, value.Trim(), defaults));
             sb.AppendLine();
         }
 

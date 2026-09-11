@@ -42,6 +42,32 @@ Locking the PC pauses capture; unlocking resumes it. With `record=games`, captur
 game is in front (anything on the `games=` list, or any app covering its monitor with no title bar)
 and pauses once one has been gone for `game_grace_seconds`; the tray dot turns amber while waiting.
 
+## Setting it up on your PC
+You need Windows 10/11 and an **NVIDIA** graphics card (the encoding runs on its NVENC chip — AMD/Intel
+would need a different encoder, see below).
+
+1. Install ffmpeg. The build must have `ddagrab` and `h264_nvenc` in it — this one does:
+   ```
+   winget install yt-dlp.FFmpeg
+   ```
+   (open a new terminal afterwards so `ffmpeg` is on PATH; `ffmpeg -filters | findstr ddagrab` should print a line).
+2. Get the code and build it — no Visual Studio needed, the compiler is already inside Windows:
+   ```
+   git clone https://github.com/Rio-Kamran/rewind
+   cd rewind
+   powershell -ExecutionPolicy Bypass -File build.ps1
+   ```
+   You should see `Building Rewind.exe` and `NN passed, 0 failed`.
+3. Run `Rewind.exe`. A red dot appears in the tray and it is already recording. Press **Ctrl+Alt+P**
+   to save the last 60 s; clips land in `Videos\Rewind`. Right-click the dot → *Open Rewind* for the
+   clip window and the settings.
+4. To have it start with Windows: press Win+R, type `shell:startup`, and put a shortcut to `Rewind.exe`
+   in the folder that opens.
+
+Settings are in `config.txt` (created next to the exe on first run from `config.example.txt`) or in the
+window's Settings tab. Non-NVIDIA cards: change `codec` handling in `src/FfmpegArgs.cs` to `h264_amf`
+(AMD) or `h264_qsv` (Intel) — untested.
+
 ## Build
 ```
 powershell -File build.ps1
