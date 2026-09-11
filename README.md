@@ -64,7 +64,7 @@ Needs `ffmpeg.exe` on PATH (a recent build with `ddagrab` and `h264_nvenc`; the 
 | `src/FfmpegArgs.cs` | builds the ffmpeg command lines: capture, remux, trim (pure, tested) |
 | `src/Config.cs` | `config.txt` parsing, validation, and writing it back with comments |
 | `src/GameDetector.cs` / `ForegroundApp.cs` | what's in front and whether it counts as a game (pure, tested) |
-| `src/ClipsForm.cs` / `SettingsTab.cs` / `TrimForm.cs` | the window: clip grid, settings editor, trim dialog |
+| `src/ClipsForm.cs` / `ClipGrid.cs` / `SettingsTab.cs` / `TrimForm.cs` | the window: the form, the owner-painted grid (tiles fill the width), settings editor, trim dialog |
 | `src/ClipLibrary.cs` / `ClipProbe.cs` | listing clips and reading names; thumbnails, durations and preview frames via ffmpeg |
 | `src/HotkeySpec.cs` / `HotkeyWindow.cs` | hotkey parsing and the global RegisterHotKey window (two slots) |
 | `src/Dxgi.cs` | finds which DXGI output is the primary monitor |
