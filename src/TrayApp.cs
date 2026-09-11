@@ -82,21 +82,31 @@ namespace Rewind
                 return false;
             }
 
+            _ui = new Control();
+            var forceHandle = _ui.Handle; // a handle is what lets other threads Invoke onto this one
+            GC.KeepAlive(forceHandle);
+
+            BuildTray();
+
+            string ffmpeg;
             try
             {
-                _ffmpeg = FfmpegLocator.Find(_config.FfmpegPath);
+                ffmpeg = FfmpegLocator.TryFind(_config.FfmpegPath);
             }
             catch (InvalidOperationException error)
             {
                 Fatal(error.Message);
                 return false;
             }
+            if (ffmpeg != null) StartCapture(ffmpeg);
+            else FetchFfmpeg(); // one-time: capture starts when the download lands
+            return true;
+        }
 
-            _ui = new Control();
-            var forceHandle = _ui.Handle; // a handle is what lets other threads Invoke onto this one
-            GC.KeepAlive(forceHandle);
-
-            BuildTray();
+        /// <summary>Everything that needs ffmpeg: the session, hotkeys, signals, the timers.</summary>
+        private void StartCapture(string ffmpeg)
+        {
+            _ffmpeg = ffmpeg;
             _session = new CaptureSession(_config, _ffmpeg);
             _session.AudioMissing += OnAudioMissing;
             _session.ClipSaved += clip => OnUi(() =>
@@ -127,7 +137,53 @@ namespace Rewind
             Log.Info(string.Format("Rewind started: {0} s buffer, {1} fps, {2} Mbps {3}, hotkey {4}, short clip {5} s on {6}, record={7}, clips -> {8}",
                 _config.Seconds, _config.Fps, _config.BitrateMbps, _config.Codec, _config.Hotkey,
                 _config.ShortSeconds, _config.HotkeyShort.Length > 0 ? _config.HotkeyShort : "(no key)", _config.Record, _config.ClipsFolder));
-            return true;
+            RefreshTooltip();
+        }
+
+        /// <summary>No ffmpeg anywhere: download it (about 110 MB, once) and then start capture.</summary>
+        private void FetchFfmpeg()
+        {
+            _icon.Icon = _pausedIcon;
+            SetTooltip("Rewind: getting ffmpeg");
+            Log.Info("ffmpeg not found; downloading it from " + FfmpegFetcher.ZipUrl + " into " + FfmpegFetcher.DefaultFolder);
+            Balloon("One-time setup", "Rewind needs ffmpeg (about 110 MB). Downloading it now; recording starts when it's done.", ToolTipIcon.Info);
+            var folder = FfmpegFetcher.DefaultFolder;
+            var worker = new Thread(() =>
+            {
+                string path = null;
+                string failure = null;
+                try
+                {
+                    path = FfmpegFetcher.Fetch(folder, text => OnUi(() => SetTooltip("Rewind: " + text)));
+                }
+                catch (Exception error)
+                {
+                    failure = error.Message;
+                }
+                OnUi(() =>
+                {
+                    if (_disposed) return;
+                    if (path == null)
+                    {
+                        Log.Error("ffmpeg download failed: " + failure);
+                        SetTooltip("Rewind: no ffmpeg (click the balloon)");
+                        Balloon("Couldn't get ffmpeg", failure + "\nRewind will try again next start. Click to open the log.", ToolTipIcon.Error,
+                            () => OpenFile(Log.Path));
+                        return;
+                    }
+                    Log.Info("ffmpeg ready: " + path);
+                    StartCapture(path);
+                    Balloon("Ready", "ffmpeg is in place and Rewind is recording. " + HotkeySpec.Parse(_config.Hotkey).Text + " saves a clip.", ToolTipIcon.Info);
+                });
+            }) { IsBackground = true, Name = "rewind-ffmpeg-fetch" };
+            worker.Start();
+        }
+
+        private void SetTooltip(string text)
+        {
+            if (_icon == null) return;
+            if (text.Length > MaxTooltipLength) text = text.Substring(0, MaxTooltipLength);
+            if (_icon.Text != text) _icon.Text = text;
         }
 
         // ---- config ----
@@ -170,6 +226,7 @@ namespace Rewind
             if (fresh == null) throw new ArgumentNullException("fresh");
             Log.Info("reloading config");
             _config = fresh;
+            if (_session == null) return; // still getting ffmpeg: the new config is picked up when capture starts
             _session.Rebuild(fresh);
             RegisterHotkeys();
             WatchGame();
@@ -241,6 +298,11 @@ namespace Rewind
         public void SaveClip(string reason, int seconds)
         {
             var config = _config;
+            if (_session == null)
+            {
+                OnUi(() => Balloon("Not ready yet", "Rewind is still getting ffmpeg; recording starts when that's done.", ToolTipIcon.Warning));
+                return;
+            }
             var result = _session.SaveAsync(seconds, reason,
                 clip => OnUi(() =>
                 {
@@ -425,6 +487,7 @@ namespace Rewind
 
         public void TogglePause()
         {
+            if (_session == null) return;
             var paused = !_session.UserPaused;
             _session.SetUserPaused(paused);
             _pauseItem.Text = paused ? "Resume recording" : "Pause recording";

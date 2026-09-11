@@ -5,7 +5,8 @@ $root = $PSScriptRoot
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path $csc)) { throw "C# compiler not found at $csc" }
 
-$refs = @('/r:System.dll', '/r:System.Core.dll', '/r:System.Drawing.dll', '/r:System.Windows.Forms.dll', '/r:Microsoft.VisualBasic.dll')
+$refs = @('/r:System.dll', '/r:System.Core.dll', '/r:System.Drawing.dll', '/r:System.Windows.Forms.dll', '/r:Microsoft.VisualBasic.dll',
+          '/r:System.IO.Compression.dll', '/r:System.IO.Compression.FileSystem.dll')
 $src = Get-ChildItem (Join-Path $root 'src\*.cs') | ForEach-Object { $_.FullName }
 
 # Tray icon file for the exe itself (Explorer, Start menu); the tray icon is drawn at runtime.

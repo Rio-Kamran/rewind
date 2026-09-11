@@ -42,11 +42,18 @@ Locking the PC pauses capture; unlocking resumes it. With `record=games`, captur
 game is in front (anything on the `games=` list, or any app covering its monitor with no title bar)
 and pauses once one has been gone for `game_grace_seconds`; the tray dot turns amber while waiting.
 
-## Setting it up on your PC
-You need Windows 10/11 and an **NVIDIA** graphics card (the encoding runs on its NVENC chip — AMD/Intel
-would need a different encoder, see below).
+## Just want the .exe?
+Download **`Rewind.exe`** from the [latest release](https://github.com/Rio-Kamran/rewind/releases/latest)
+and run it. You need Windows 10/11 and an **NVIDIA** graphics card (the encoding runs on its NVENC chip).
+The first time, it downloads ffmpeg by itself (about 110 MB, once, into `%LOCALAPPDATA%\Rewind\ffmpeg`)
+and then starts recording — the tray dot turns red when it's ready and a balloon says so. `config.txt`
+appears next to the exe. To start with Windows: Win+R → `shell:startup` → drop in a shortcut to Rewind.exe.
 
-1. Install ffmpeg. The build must have `ddagrab` and `h264_nvenc` in it — this one does:
+## Building it yourself
+Same requirements (Windows 10/11, NVIDIA card). AMD/Intel would need a different encoder, see below.
+
+1. Install ffmpeg (or skip this — Rewind fetches one on first run). The build must have `ddagrab` and
+   `h264_nvenc` in it — this one does:
    ```
    winget install yt-dlp.FFmpeg
    ```

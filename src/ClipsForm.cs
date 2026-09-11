@@ -263,7 +263,7 @@ namespace Rewind
                 var title = clip.Game.Length > 0 ? clip.Game : "Desktop";
                 if (filter != AllGames && !string.Equals(filter, title, StringComparison.OrdinalIgnoreCase)) continue;
                 shown.Add(clip);
-                if (!_grid.HasThumbnail(clip.Path)) Enqueue(clip);
+                if (!_grid.HasThumbnail(clip.Path) && _control.FfmpegPath != null) Enqueue(clip); // no ffmpeg yet = no thumbnails yet
             }
             _grid.EmptyText = _clips.Count == 0
                 ? "No clips yet.\nPress " + HotkeySpec.Parse(_control.Config.Hotkey).Text + " while something happens."
@@ -384,7 +384,12 @@ namespace Rewind
         {
             if (IsDisposed) return;
             var status = _control.Status;
-            if (status == null) return;
+            if (status == null)
+            {
+                _status.Text = "⏳ Getting ffmpeg (one-time download)";
+                _status.ForeColor = Color.DimGray;
+                return;
+            }
             var missing = status.MissingAudio.Count > 0 ? "  (no " + string.Join(" or ", status.MissingAudio).ToLowerInvariant() + " audio)" : "";
             _status.Text = status.Paused
                 ? (status.PauseReason == "waiting for a game" ? "⏳ " : "⏸ ") + status.Text
@@ -478,6 +483,7 @@ namespace Rewind
         {
             var clip = _grid.Selected;
             if (clip == null) return;
+            if (_control.FfmpegPath == null) { Say("Rewind is still getting ffmpeg; try again in a minute."); return; }
             using (var dialog = new TrimForm(_control, clip, _thumbFolder))
             {
                 if (dialog.ShowDialog(this) != DialogResult.OK || dialog.SavedPath == null) return;

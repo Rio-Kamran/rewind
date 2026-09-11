@@ -265,6 +265,23 @@ namespace Rewind.Tests
                 Contains(Config.Text(Config.Parse(@"clips=D:\clips").Values()), @"clips=D:\clips");
             });
 
+            Run("ffmpeg fetch: knows the zip entry and the progress text", () =>
+            {
+                True(FfmpegFetcher.IsFfmpegEntry("ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe"), "bin/ffmpeg.exe");
+                True(!FfmpegFetcher.IsFfmpegEntry("ffmpeg-master-latest-win64-gpl/bin/ffprobe.exe"), "ffprobe is not it");
+                True(!FfmpegFetcher.IsFfmpegEntry("ffmpeg-master-latest-win64-gpl/doc/ffmpeg.exe.txt"), "a doc is not it");
+                Equal("43 MB of 110 MB", FfmpegFetcher.Progress(43 * 1048576L, 110 * 1048576L));
+                Equal("43 MB", FfmpegFetcher.Progress(43 * 1048576L, -1));
+            });
+            Run("ffmpeg locator: next to the exe, then the fetched copy, then PATH", () =>
+            {
+                var c = FfmpegLocator.Candidates(null, @"C:\app", @"C:\data\ffmpeg", "C:\\one;\"C:\\two\";;");
+                Equal(4, c.Count);
+                Equal(@"C:\app\ffmpeg.exe", c[0]); Equal(@"C:\data\ffmpeg\ffmpeg.exe", c[1]);
+                Equal(@"C:\one\ffmpeg.exe", c[2]); Equal(@"C:\two\ffmpeg.exe", c[3]);
+                Equal(@"D:\x\ffmpeg.exe", FfmpegLocator.Candidates(@"D:\x\ffmpeg.exe", null, null, null)[0]);
+            });
+
             var monitor = new Rectangle(0, 0, 2560, 1440);
             var none = new string[0];
             Run("games: a listed process counts even in a small window", () =>
