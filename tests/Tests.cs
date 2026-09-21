@@ -386,6 +386,26 @@ namespace Rewind.Tests
                 Equal(40, ForegroundApp.Clean(new string('a', 80)).Length);
             });
 
+            Run("fault: ddagrab losing the screen is fatal, other ffmpeg chatter is not", () =>
+            {
+                True(CaptureFault.IsVideoLost("[Parsed_ddagrab_0 @ 0000013e41d81b00] AcquireNextFrame failed: 887a0026"), "access lost");
+                True(CaptureFault.IsVideoLost("[in#0/lavfi @ 0000013e41d63f00] Error during demuxing: Generic error in an external library"), "lavfi demux error");
+                True(!CaptureFault.IsVideoLost("[Parsed_ddagrab_0 @ 0000013e41d81b00] EOF timestamp not reliable"), "eof note");
+                True(!CaptureFault.IsVideoLost("[aac @ 000001] Queue input is backward in time"), "audio warning");
+                True(!CaptureFault.IsVideoLost(""), "empty");
+                True(!CaptureFault.IsVideoLost(null), "null");
+            });
+            Run("fault: a buffer far too small for the bitrate is audio only", () =>
+            {
+                var minute = TimeSpan.FromSeconds(62);
+                True(CaptureFault.LooksAudioOnly(3L * 1048576, minute, 20), "3 MB a minute at 20 Mbps");
+                True(!CaptureFault.LooksAudioOnly(145L * 1048576, minute, 20), "healthy buffer");
+                True(!CaptureFault.LooksAudioOnly(1L * 1048576, TimeSpan.FromSeconds(5), 20), "still filling");
+                True(!CaptureFault.LooksAudioOnly(3L * 1048576, minute, 2), "low bitrate: audio alone is over the bar, stay quiet");
+                Throws<ArgumentOutOfRangeException>(() => CaptureFault.LooksAudioOnly(-1, minute, 20));
+                Throws<ArgumentOutOfRangeException>(() => CaptureFault.LooksAudioOnly(1, minute, 0));
+            });
+
             Console.WriteLine();
             Console.WriteLine(string.Format("{0} passed, {1} failed", _passed, _failed));
             return _failed == 0 ? 0 : 1;

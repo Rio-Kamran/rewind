@@ -201,6 +201,13 @@ namespace Rewind
                             _restartWanted = true;
                             break;
                         }
+                        if (CaptureFault.LooksAudioOnly(_ring.Bytes, _ring.Span, _config.BitrateMbps))
+                        {
+                            Log.Warn(string.Format("buffer holds {0:0} s in only {1:0} MB: the video has stopped; restarting capture",
+                                _ring.Span.TotalSeconds, _ring.Bytes / 1048576.0));
+                            _restartWanted = true;
+                            break;
+                        }
                     }
                 }
             }
@@ -237,7 +244,7 @@ namespace Rewind
             return false;
         }
 
-        private static void DrainStderr(Process process, Queue<string> tail)
+        private void DrainStderr(Process process, Queue<string> tail)
         {
             try
             {
@@ -250,6 +257,12 @@ namespace Rewind
                     {
                         tail.Enqueue(line);
                         while (tail.Count > StderrTailLines) tail.Dequeue();
+                    }
+                    if (CaptureFault.IsVideoLost(line))
+                    {
+                        // ffmpeg would carry on with the audio pipes alone; end it so the supervisor starts a fresh grab.
+                        Log.Warn("the screen grab ended; stopping ffmpeg so it restarts");
+                        KillCurrent();
                     }
                 }
             }

@@ -56,6 +56,9 @@ namespace Rewind
             foreach (var chunk in chunks) total += chunk.Data.Length;
             if (total < MinUsefulBytes)
                 throw new InvalidOperationException("Nothing to save yet: the buffer is still filling (" + total / 1024 + " KB).");
+            if (CaptureFault.LooksAudioOnly(total, DateTime.UtcNow - chunks[0].AtUtc, config.BitrateMbps)
+                || CaptureFault.LooksAudioOnly(ring.Bytes, buffered, config.BitrateMbps))
+                throw new InvalidOperationException("No video in the buffer: the screen capture is restarting. Try again in a few seconds.");
 
             var plan = TsCut.Plan(chunks);
 
@@ -106,8 +109,11 @@ namespace Rewind
                 string errorText;
                 lock (stderr) errorText = stderr.ToString().Trim();
                 if (process.ExitCode != 0 || !File.Exists(mp4) || !fed)
+                {
+                    DeleteIfEmpty(mp4);
                     throw new InvalidOperationException(string.Format("ffmpeg couldn't write the clip (code {0}): {1}",
                         process.ExitCode, Tail(errorText)));
+                }
                 if (errorText.Length > 0) Log.Warn("remux: " + errorText);
             }
         }
@@ -121,6 +127,24 @@ namespace Rewind
                 var data = chunks[i].Data;
                 var offset = i == plan.StartChunk ? plan.StartOffset : 0;
                 stdin.Write(data, offset, data.Length - offset);
+            }
+        }
+
+        /// <summary>A failed save leaves a 0-byte MP4 behind; the clip window would list it as a clip that can't play.</summary>
+        private static void DeleteIfEmpty(string mp4)
+        {
+            try
+            {
+                var file = new FileInfo(mp4);
+                if (file.Exists && file.Length == 0) file.Delete();
+            }
+            catch (IOException error)
+            {
+                Log.Warn("couldn't remove the empty clip " + mp4 + ": " + error.Message);
+            }
+            catch (UnauthorizedAccessException error)
+            {
+                Log.Warn("couldn't remove the empty clip " + mp4 + ": " + error.Message);
             }
         }
 
