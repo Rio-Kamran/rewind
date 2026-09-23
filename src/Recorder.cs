@@ -156,7 +156,9 @@ namespace Rewind
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     RedirectStandardOutput = true,
-                    RedirectStandardError = true
+                    RedirectStandardError = true,
+                    // So a mic_filter can name a file next to the exe (rnnoise/voice.rnnn) however Rewind was started.
+                    WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory
                 }
             };
             var stderrTail = new Queue<string>();

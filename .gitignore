@@ -16,3 +16,6 @@ desktop.ini
 .vs/
 *.user
 .claude/
+
+# RNNoise models copied from Medal (not ours to publish)
+rnnoise/
