@@ -392,9 +392,9 @@ namespace Rewind
                     var heard = text != null ? SpeechGate.ParseText(text) : null;
                     if (!string.IsNullOrEmpty(heard))
                     {
+                        // What was said is nobody's business: only the phrase is acted on, nothing else is logged.
                         var consumed = 0;
-                        if (!_owner.Check(heard, ref consumed))
-                            Log.Info("voice (riovoice): heard \"" + heard.Trim() + "\"");
+                        _owner.Check(heard, ref consumed);
                     }
                 }
                 Close(ws, token);

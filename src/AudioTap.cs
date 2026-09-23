@@ -161,8 +161,21 @@ namespace Rewind
             if (format == null) throw new InvalidOperationException(_label + " audio isn't open.");
 
             _formatChanged = false;
-            var server = new NamedPipeServerStream(_pipeName, PipeDirection.Out, 1,
-                PipeTransmissionMode.Byte, PipeOptions.None, 0, 1 << 20);
+            NamedPipeServerStream server;
+            try
+            {
+                server = new NamedPipeServerStream(_pipeName, PipeDirection.Out, 1,
+                    PipeTransmissionMode.Byte, PipeOptions.None, 0, 1 << 20);
+            }
+            catch (IOException)
+            {
+                // A leftover instance nobody could close (see EndSession): wake whoever holds it and try once more.
+                Log.Warn(_label + " audio pipe was still held by an old session; clearing it");
+                Unpark();
+                Thread.Sleep(300);
+                server = new NamedPipeServerStream(_pipeName, PipeDirection.Out, 1,
+                    PipeTransmissionMode.Byte, PipeOptions.None, 0, 1 << 20);
+            }
             _server = server;
             _sessionOpen = true;
             _writerThread = new Thread(() => WriterLoop(server, format))
@@ -178,14 +191,35 @@ namespace Rewind
             _sessionOpen = false;
             var server = _server;
             _server = null;
+            var thread = _writerThread;
+            _writerThread = null;
             if (server != null)
             {
+                // If ffmpeg died before it ever connected, the writer is still parked inside
+                // WaitForConnection, and Dispose() can't take the handle away from a call that
+                // is using it: the instance stays alive, and the next BeginSession's
+                // CreateNamedPipe fails with "All pipe instances are busy" for ever after
+                // (2026-09-21: capture dead for a day). A throwaway client connection makes the
+                // wait return, the writer sees the session is over and leaves, and only then is
+                // the instance really gone.
+                Unpark();
                 try { server.Dispose(); }
                 catch (IOException) { /* already broken by ffmpeg exiting: nothing to clean up */ }
             }
-            var thread = _writerThread;
-            _writerThread = null;
             if (thread != null && thread != Thread.CurrentThread) thread.Join(1500);
+        }
+
+        /// <summary>Connects (and at once drops) a client so a writer stuck in WaitForConnection wakes up.</summary>
+        private void Unpark()
+        {
+            try
+            {
+                using (var client = new NamedPipeClientStream(".", _pipeName, PipeDirection.In))
+                    client.Connect(200);
+            }
+            catch (TimeoutException) { /* nobody was waiting: nothing to unpark */ }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
         }
 
         public void Dispose()
@@ -206,6 +240,7 @@ namespace Rewind
             try
             {
                 server.WaitForConnection();
+                if (!_sessionOpen || _disposed) return; // woken by EndSession's throwaway client, not by ffmpeg
                 // Audio from before ffmpeg connected belongs to no recording: t = 0 is now.
                 lock (_gate) DropAll();
 
