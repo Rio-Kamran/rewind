@@ -35,6 +35,10 @@ any clip under Discord's upload limit and puts it on the clipboard.
   audio, games-only recording, the recording limit, the Discord size limit, a storage cap (delete the
   oldest clips past N GB), the chime and its volume, the voice phrase, clips folder. The Settings tab
   writes the same file. Drop a `clip.wav` next to the exe to use your own chime.
+- `mic_filter` takes any ffmpeg audio filter chain. The default is a plain FFT denoiser; if you have an RNNoise
+  model file (`.rnnn`, the `rnnoise-nu` text format, e.g. from the rnnoise-models project) put it in a `rnnoise\`
+  folder next to the exe and use `mic_filter=arnndn=m=rnnoise/your-model.rnnn` (ffmpeg runs from the exe folder).
+  `highpass=f=80,arnndn=m=…,speechnorm=e=6:r=0.0005:l=1` also evens out the voice level. Costs well under 1 % of a core.
 
 ## How it works
 One `ffmpeg` process does the heavy lifting, all on the graphics card:
