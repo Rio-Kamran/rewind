@@ -25,6 +25,11 @@ namespace Rewind
         void TakeScreenshot(string reason);
         /// <summary>Plays the clip chime at the current settings (the Settings tab's Test button).</summary>
         void PlayTestSound();
+        /// <summary>
+        /// Lets go of the global hotkeys while a Settings hotkey box is being set (so pressing
+        /// Ctrl+Alt+P there fills the box instead of saving a clip), and claims them back after.
+        /// </summary>
+        void SuspendHotkeys(bool suspended);
 
         /// <summary>Validates, writes config.txt and restarts capture. Throws ConfigException with a message to show.</summary>
         void SaveSettings(IDictionary<string, string> values);

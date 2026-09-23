@@ -38,10 +38,10 @@ namespace Rewind
             _grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
             Heading("Keys");
-            AddText("hotkey", "Save clip hotkey", "e.g. ctrl+alt+p, F9, shift+F10");
-            AddText("hotkey_short", "Short clip hotkey", "off = no second key");
-            AddText("hotkey_record", "Record hotkey", "starts a long recording; again to stop. off = none");
-            AddText("hotkey_screenshot", "Screenshot hotkey", "saves a PNG and copies it. off = none");
+            AddHotkey("hotkey", "Save clip hotkey", false, "click, then press the keys, e.g. Ctrl+Alt+P or F9");
+            AddHotkey("hotkey_short", "Short clip hotkey", true, "press the keys; Backspace = off");
+            AddHotkey("hotkey_record", "Record hotkey", true, "starts a long recording; again to stop. Backspace = off");
+            AddHotkey("hotkey_screenshot", "Screenshot hotkey", true, "saves a PNG and copies it. Backspace = off");
             AddCheck("voice_clip", "Voice clipping", "say the phrase into the mic to save a clip");
             AddText("voice_phrase", "Voice phrase", "two or three clear words, e.g. clip that");
             AddChoice("voice_engine", "Voice engine", new[] { Config.VoiceWindows, Config.VoiceRioVoice }, "windows = built in, offline; riovoice = the homelab's speech-to-text");
@@ -228,6 +228,15 @@ namespace Rewind
         private void AddText(string key, string label, string hint)
         {
             AddRow(key, label, new TextBox(), hint);
+        }
+
+        /// <summary>A box set by pressing the combo; Rewind's own hotkeys step aside while it has focus.</summary>
+        private void AddHotkey(string key, string label, bool optional, string hint)
+        {
+            var box = new HotkeyBox(optional);
+            box.GotFocus += (s, e) => _control.SuspendHotkeys(true);
+            box.LostFocus += (s, e) => _control.SuspendHotkeys(false);
+            AddRow(key, label, box, hint);
         }
 
         private void AddNumber(string key, string label, int min, int max, string hint)

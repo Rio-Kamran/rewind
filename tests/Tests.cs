@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
+using System.Windows.Forms;
 using Rewind;
 
 namespace Rewind.Tests
@@ -111,6 +112,26 @@ namespace Rewind.Tests
             Run("hotkey: two keys is refused", () => Throws<ConfigException>(() => HotkeySpec.Parse("a+b")));
             Run("hotkey: modifier as the key is refused", () => Throws<ConfigException>(() => HotkeySpec.Parse("ctrl+shiftkey")));
             Run("hotkey: empty is refused", () => Throws<ConfigException>(() => HotkeySpec.Parse("  ")));
+            Run("hotkey box: a pressed combo becomes config text", () =>
+            {
+                Equal("ctrl+alt+p", HotkeySpec.FromKeys(Keys.Control | Keys.Alt | Keys.P));
+                Equal("F9", HotkeySpec.FromKeys(Keys.F9));
+                Equal("shift+F10", HotkeySpec.FromKeys(Keys.Shift | Keys.F10));
+                Equal("ctrl+5", HotkeySpec.FromKeys(Keys.Control | Keys.D5));
+            });
+            Run("hotkey box: modifiers alone are not a hotkey yet", () =>
+            {
+                Equal<string>(null, HotkeySpec.FromKeys(Keys.Control | Keys.Alt | Keys.Menu));
+                Equal("ctrl+alt+", HotkeySpec.Held(Keys.Control | Keys.Alt));
+            });
+            Run("hotkey box: every pressed combo parses back to the same keys", () =>
+            {
+                foreach (var keys in new[] { Keys.Control | Keys.Alt | Keys.P, Keys.F9, Keys.Shift | Keys.F10, Keys.Alt | Keys.D5, Keys.Control | Keys.OemMinus, Keys.Control | Keys.Shift | Keys.NumPad7 })
+                {
+                    var h = HotkeySpec.Parse(HotkeySpec.FromKeys(keys));
+                    Equal((uint)(keys & Keys.KeyCode), h.VirtualKey);
+                }
+            });
 
             Run("ring: keeps only the window", () =>
             {

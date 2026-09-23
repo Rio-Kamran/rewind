@@ -85,6 +85,32 @@ namespace Rewind
             return bare;
         }
 
+        /// <summary>
+        /// A combo pressed in a hotkey box, as config text ("ctrl+alt+p", "shift+F10"), or null
+        /// while only modifiers are down. Parse reads it back to the same keys.
+        /// </summary>
+        public static string FromKeys(Keys keyData)
+        {
+            var key = keyData & Keys.KeyCode;
+            if (key == Keys.None || key == Keys.ControlKey || key == Keys.ShiftKey || key == Keys.Menu
+                || key == Keys.LWin || key == Keys.RWin)
+                return null;
+            var name = key.ToString();
+            if (name.Length == 2 && name[0] == 'D' && char.IsDigit(name[1])) name = name.Substring(1);
+            else if (name.Length == 1) name = name.ToLowerInvariant();
+            return Held(keyData) + name;
+        }
+
+        /// <summary>The modifiers held so far, e.g. "ctrl+alt+", so the box shows the combo as it's built.</summary>
+        public static string Held(Keys keyData)
+        {
+            var text = "";
+            if ((keyData & Keys.Control) != 0) text += "ctrl+";
+            if ((keyData & Keys.Alt) != 0) text += "alt+";
+            if ((keyData & Keys.Shift) != 0) text += "shift+";
+            return text;
+        }
+
         private static string Describe(uint modifiers, Keys key)
         {
             var text = "";

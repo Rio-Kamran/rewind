@@ -576,6 +576,21 @@ namespace Rewind
             Sounds.Play(Chime.Clip, _config, _appDir);
         }
 
+        public void SuspendHotkeys(bool suspended)
+        {
+            if (_hotkeyWindow == null) return;
+            if (suspended)
+            {
+                for (var slot = 0; slot < HotkeyWindow.Slots; slot++) _hotkeyWindow.Unregister(slot);
+                Log.Info("hotkeys paused while a Settings hotkey box is being set");
+            }
+            else
+            {
+                RegisterHotkeys();
+                Log.Info("hotkeys back");
+            }
+        }
+
         private void RaiseFilesChanged()
         {
             var handler = FilesChanged;
