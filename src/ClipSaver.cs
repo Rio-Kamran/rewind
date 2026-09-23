@@ -63,9 +63,7 @@ namespace Rewind
             var plan = TsCut.Plan(chunks);
 
             Directory.CreateDirectory(config.ClipsFolder);
-            var game = ForegroundApp.Name();
-            var name = string.Format("Rewind {0}{1:yyyy-MM-dd HH-mm-ss}.mp4", game.Length > 0 ? game + " " : "", DateTime.Now);
-            var mp4 = Path.Combine(config.ClipsFolder, name);
+            var mp4 = Path.Combine(config.ClipsFolder, ClipLibrary.NewName(ForegroundApp.Name(), DateTime.Now, "", "mp4"));
 
             Remux(ffmpegPath, FfmpegArgs.Remux(mp4, audioLabels, config.Codec), mp4, chunks, plan);
             return new SavedClip(mp4, new FileInfo(mp4).Length, buffered, seconds, plan.Clean, plan.TrimmedBytes);
@@ -119,7 +117,7 @@ namespace Rewind
         }
 
         /// <summary>Writes the tables, then every chunk from the cut on. Chunks are already pipe-sized (64 KB).</summary>
-        private static void Feed(Stream stdin, IList<Chunk> chunks, CutPlan plan)
+        public static void Feed(Stream stdin, IList<Chunk> chunks, CutPlan plan)
         {
             if (plan.Prefix.Length > 0) stdin.Write(plan.Prefix, 0, plan.Prefix.Length);
             for (var i = plan.StartChunk; i < chunks.Count; i++)
@@ -148,7 +146,8 @@ namespace Rewind
             }
         }
 
-        private static void Collect(Process process, StringBuilder into)
+        /// <summary>Reads ffmpeg's stderr to the end into the builder (lock it to read).</summary>
+        public static void Collect(Process process, StringBuilder into)
         {
             try
             {
@@ -168,7 +167,8 @@ namespace Rewind
             }
         }
 
-        private static string Tail(string text)
+        /// <summary>The last line of ffmpeg's chatter: the one that says what went wrong.</summary>
+        public static string Tail(string text)
         {
             var lines = text.Split('\n');
             return lines.Length == 0 ? "" : lines[lines.Length - 1].Trim();

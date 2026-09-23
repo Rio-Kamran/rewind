@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Specialized;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
 using Microsoft.VisualBasic;
@@ -10,9 +12,10 @@ using Microsoft.VisualBasic;
 namespace Rewind
 {
     /// <summary>
-    /// The Rewind window: a thumbnail grid of every clip (newest first, grouped by day, tiles
-    /// stretched to fill the width) with play / show / rename / delete / trim, a live status strip
-    /// with the save and pause buttons, and a Settings tab. Built in code; closing it only hides it.
+    /// The Rewind window: a thumbnail grid of every clip and screenshot (newest first, grouped by
+    /// day, tiles stretched to fill the width) with play / show / rename / delete / trim / copy
+    /// for Discord, a live status strip with the save, screenshot, record and pause buttons, and
+    /// a Settings tab. Built in code; closing it only hides it.
     /// </summary>
     internal sealed class ClipsForm : Form
     {
@@ -26,12 +29,15 @@ namespace Rewind
         private readonly Label _detail = new Label();
         private readonly Button _saveButton = new Button();
         private readonly Button _saveShortButton = new Button();
+        private readonly Button _screenshotButton = new Button();
+        private readonly Button _recordButton = new Button();
         private readonly Button _pauseButton = new Button();
         private readonly Button _playButton = new Button();
         private readonly Button _showButton = new Button();
         private readonly Button _renameButton = new Button();
         private readonly Button _deleteButton = new Button();
         private readonly Button _trimButton = new Button();
+        private readonly Button _shareButton = new Button();
         private readonly SettingsTab _settings;
         private readonly System.Windows.Forms.Timer _statusTimer = new System.Windows.Forms.Timer { Interval = 1000 };
         private readonly System.Windows.Forms.Timer _deleteArmTimer = new System.Windows.Forms.Timer { Interval = 3000 };
@@ -43,6 +49,7 @@ namespace Rewind
         private bool _stopProbe;
         private IList<ClipInfo> _clips = new List<ClipInfo>();
         private bool _deleteArmed;
+        private bool _sharing;
         private bool _reallyClosing;
 
         public ClipsForm(IRewindControl control, string appDir)
@@ -54,8 +61,8 @@ namespace Rewind
             _settings = new SettingsTab(control);
 
             Text = "Rewind";
-            Size = new Size(1120, 740);
-            MinimumSize = new Size(820, 520);
+            Size = new Size(1180, 740);
+            MinimumSize = new Size(900, 520);
             StartPosition = FormStartPosition.CenterScreen;
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch (Exception) { /* the default icon will do */ }
 
@@ -74,6 +81,7 @@ namespace Rewind
             _deleteArmTimer.Tick += (s, e) => DisarmDelete();
             _watchTimer.Tick += (s, e) => { _watchTimer.Stop(); RefreshClips(); };
             _control.ClipSaved += clip => RefreshClips();
+            _control.FilesChanged += RefreshClips;
         }
 
         /// <summary>Called by TrayApp on quit: after this, Close() really closes.</summary>
@@ -143,28 +151,31 @@ namespace Rewind
             Setup(_saveButton, "Save clip", (s, e) => _control.SaveClip("window", _control.Config.Seconds));
             _saveButton.Font = new Font(Font, FontStyle.Bold);
             Setup(_saveShortButton, "Save last 15 s", (s, e) => _control.SaveClip("window", _control.Config.ShortSeconds));
+            Setup(_screenshotButton, "Screenshot", (s, e) => _control.TakeScreenshot("window"));
+            Setup(_recordButton, "Record", (s, e) => { _control.ToggleRecording("window"); RefreshStatus(); });
             Setup(_pauseButton, "Pause", (s, e) => { _control.TogglePause(); RefreshStatus(); });
             var openFolder = new Button();
             Setup(openFolder, "Open folder", (s, e) => OpenFolder());
             var refresh = new Button();
             Setup(refresh, "Refresh", (s, e) => RefreshClips());
             _gameFilter.DropDownStyle = ComboBoxStyle.DropDownList;
-            _gameFilter.Width = 180;
+            _gameFilter.Width = 160;
             _gameFilter.Margin = new Padding(16, 3, 0, 0);
             _gameFilter.SelectedIndexChanged += (s, e) => FillGrid();
-            top.Controls.AddRange(new Control[] { _status, _saveButton, _saveShortButton, _pauseButton, openFolder, refresh, _gameFilter });
+            top.Controls.AddRange(new Control[] { _status, _saveButton, _saveShortButton, _screenshotButton, _recordButton, _pauseButton, openFolder, refresh, _gameFilter });
 
             var bottom = new Panel { Dock = DockStyle.Bottom, Height = 78, Padding = new Padding(8, 6, 8, 6) };
             _detail.Dock = DockStyle.Fill;
             _detail.Text = "No clip selected.";
-            var actions = new FlowLayoutPanel { Dock = DockStyle.Right, Width = 470, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, Padding = new Padding(0, 18, 0, 0) };
+            var actions = new FlowLayoutPanel { Dock = DockStyle.Right, Width = 600, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, Padding = new Padding(0, 18, 0, 0) };
             Setup(_playButton, "Play", (s, e) => Play());
             _playButton.Font = new Font(Font, FontStyle.Bold);
+            Setup(_shareButton, "Copy for Discord", (s, e) => Share());
             Setup(_showButton, "Show in folder", (s, e) => ShowInFolder());
             Setup(_renameButton, "Rename", (s, e) => Rename());
             Setup(_deleteButton, "Delete", (s, e) => DeleteFlow());
-            Setup(_trimButton, "Trim…", (s, e) => Trim());
-            actions.Controls.AddRange(new Control[] { _playButton, _showButton, _renameButton, _deleteButton, _trimButton });
+            Setup(_trimButton, "Trim / GIF…", (s, e) => Trim());
+            actions.Controls.AddRange(new Control[] { _playButton, _shareButton, _showButton, _renameButton, _deleteButton, _trimButton });
             bottom.Controls.Add(_detail);
             bottom.Controls.Add(actions);
 
@@ -175,6 +186,7 @@ namespace Rewind
             {
                 if (e.KeyCode == Keys.Delete) { DeleteFlow(); e.Handled = true; }
                 else if (e.KeyCode == Keys.F2) { Rename(); e.Handled = true; }
+                else if (e.Control && e.KeyCode == Keys.C) { Share(); e.Handled = true; }
             };
 
             page.Controls.Add(_grid);
@@ -212,9 +224,9 @@ namespace Rewind
             if (!Directory.Exists(folder)) return;
             try
             {
-                var watcher = new FileSystemWatcher(folder, "*.mp4")
+                var watcher = new FileSystemWatcher(folder, "*.*")
                 {
-                    NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size,
+                    NotifyFilter = NotifyFilters.FileName,
                     SynchronizingObject = this
                 };
                 watcher.Created += (s, e) => Nudge();
@@ -273,7 +285,7 @@ namespace Rewind
 
         private static string Describe(ClipInfo clip)
         {
-            var length = clip.Duration.HasValue ? Length(clip.Duration.Value) : "length unknown";
+            var length = clip.IsImage ? "screenshot" : clip.Duration.HasValue ? Length(clip.Duration.Value) : "length unknown";
             return string.Format("{0}\n{1} · {2} · {3} · {4:0.0} MB", clip.FileName, clip.Title,
                 clip.Taken.ToString("ddd d MMM yyyy HH:mm:ss"), length, clip.Bytes / 1048576.0);
         }
@@ -290,7 +302,9 @@ namespace Rewind
             var clip = _grid.Selected;
             var have = clip != null;
             _detail.Text = have ? Describe(clip) : (_grid.Count == 0 ? "No clips to show." : "No clip selected.");
-            _playButton.Enabled = _showButton.Enabled = _renameButton.Enabled = _deleteButton.Enabled = _trimButton.Enabled = have;
+            _playButton.Enabled = _showButton.Enabled = _renameButton.Enabled = _deleteButton.Enabled = have;
+            _shareButton.Enabled = have && !_sharing;
+            _trimButton.Enabled = have && !clip.IsImage;
         }
 
         // ---- thumbnails, off the UI thread ----
@@ -391,11 +405,15 @@ namespace Rewind
                 return;
             }
             var missing = status.MissingAudio.Count > 0 ? "  (no " + string.Join(" or ", status.MissingAudio).ToLowerInvariant() + " audio)" : "";
+            var recording = status.Recording.HasValue
+                ? string.Format("  ·  ⏺ REC {0}:{1:00} ({2:0} MB)", (int)status.Recording.Value.TotalMinutes, status.Recording.Value.Seconds, status.RecordingMb)
+                : "";
             _status.Text = status.Paused
                 ? (status.PauseReason == "waiting for a game" ? "⏳ " : "⏸ ") + status.Text
-                : string.Format("● {0} — {1:0} s ready ({2:0} MB){3}", status.Text, status.BufferedSeconds, status.BufferedMb, missing);
+                : string.Format("● {0} — {1:0} s ready ({2:0} MB){3}{4}", status.Text, status.BufferedSeconds, status.BufferedMb, missing, recording);
             _status.ForeColor = status.Paused ? Color.DimGray : Color.FromArgb(200, 30, 30);
             _pauseButton.Text = _control.UserPaused ? "Resume" : "Pause";
+            _recordButton.Text = _control.Recording ? "Stop recording" : "Record";
             _saveShortButton.Text = "Save last " + _control.Config.ShortSeconds + " s";
         }
 
@@ -431,11 +449,12 @@ namespace Rewind
         {
             var clip = _grid.Selected;
             if (clip == null) return;
+            var extension = Path.GetExtension(clip.Path);
             var stem = Path.GetFileNameWithoutExtension(clip.Path);
-            var wanted = Interaction.InputBox("New name for the clip (without .mp4):", "Rename clip", stem).Trim();
+            var wanted = Interaction.InputBox("New name for the clip (without " + extension + "):", "Rename clip", stem).Trim();
             if (wanted.Length == 0 || wanted == stem) return;
             if (wanted.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) { Say("That name has characters a file can't have."); return; }
-            var target = Path.Combine(Path.GetDirectoryName(clip.Path) ?? "", wanted + ".mp4");
+            var target = Path.Combine(Path.GetDirectoryName(clip.Path) ?? "", wanted + extension);
             if (File.Exists(target)) { Say("There's already a clip called that."); return; }
             try
             {
@@ -482,13 +501,80 @@ namespace Rewind
         private void Trim()
         {
             var clip = _grid.Selected;
-            if (clip == null) return;
+            if (clip == null || clip.IsImage) return;
             if (_control.FfmpegPath == null) { Say("Rewind is still getting ffmpeg; try again in a minute."); return; }
             using (var dialog = new TrimForm(_control, clip, _thumbFolder))
             {
                 if (dialog.ShowDialog(this) != DialogResult.OK || dialog.SavedPath == null) return;
                 RefreshClips();
-                _grid.Select(dialog.SavedPath);
+                if (!_grid.Select(dialog.SavedPath))
+                    _detail.Text = Path.GetFileName(dialog.SavedPath) + " saved next to the clip and copied: paste it into Discord with Ctrl+V.";
+            }
+        }
+
+        /// <summary>Copy for Discord: the file itself if it fits, else a shrunk copy; either way it lands on the clipboard as a file.</summary>
+        private void Share()
+        {
+            var clip = _grid.Selected;
+            if (clip == null || _sharing) return;
+            if (_control.FfmpegPath == null) { Say("Rewind is still getting ffmpeg; try again in a minute."); return; }
+            _sharing = true;
+            _shareButton.Enabled = false;
+            _shareButton.Text = "Working…";
+            var ffmpeg = _control.FfmpegPath;
+            var maxMb = _control.Config.ShareMaxMb;
+            var worker = new Thread(() =>
+            {
+                ShareResult result = null;
+                string error = null;
+                try { result = ShareExport.Run(ffmpeg, clip, maxMb, text => Progress(text)); }
+                catch (Exception failure) { error = failure.Message; }
+                try { BeginInvoke(new Action(() => Shared(clip, result, error))); }
+                catch (InvalidOperationException) { }
+            }) { IsBackground = true, Name = "rewind-share" };
+            worker.Start();
+        }
+
+        private void Progress(string text)
+        {
+            try { BeginInvoke(new Action(() => { if (!IsDisposed) _detail.Text = text; })); }
+            catch (InvalidOperationException) { }
+        }
+
+        private void Shared(ClipInfo clip, ShareResult result, string error)
+        {
+            _sharing = false;
+            _shareButton.Text = "Copy for Discord";
+            if (IsDisposed) return;
+            if (error != null)
+            {
+                Log.Error("share failed: " + error);
+                UpdateDetail();
+                Say("Couldn't get it ready for Discord: " + error);
+                return;
+            }
+            var copied = CopyFileToClipboard(result.Path);
+            RefreshClips();
+            _grid.Select(result.Path);
+            var size = string.Format("{0:0.0} MB", result.Bytes / 1048576.0);
+            _detail.Text = (copied ? "Copied to the clipboard: paste it into Discord with Ctrl+V.\n" : "Ready, but the clipboard was busy; drag the file instead.\n")
+                + Path.GetFileName(result.Path) + " · " + size
+                + (result.Encoded ? " (shrunk from " + string.Format("{0:0.0} MB", clip.Bytes / 1048576.0) + ": " + result.Plan + ")" : " (fits as it is)");
+        }
+
+        /// <summary>A file onto the clipboard the way Explorer's Copy does it, so Discord/WhatsApp/anything accepts a paste.</summary>
+        public static bool CopyFileToClipboard(string path)
+        {
+            try
+            {
+                var files = new StringCollection { path };
+                Clipboard.SetFileDropList(files);
+                return true;
+            }
+            catch (ExternalException error)
+            {
+                Log.Warn("file not copied to the clipboard: " + error.Message);
+                return false;
             }
         }
 

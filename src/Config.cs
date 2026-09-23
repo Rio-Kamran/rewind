@@ -26,14 +26,19 @@ namespace Rewind
         public const int MinBitrate = 2, MaxBitrate = 150;
         public const int MaxAudioOffsetMs = 2000;
         public const int MinGraceSeconds = 5, MaxGraceSeconds = 600;
+        public const int MinRecordingMinutes = 1, MaxRecordingMinutes = 600;
+        public const int MinShareMb = 1, MaxShareMb = 500;
+        public const int MaxStorageGbLimit = 5000;
         public const string RecordAlways = "always", RecordGames = "games";
 
         private static readonly string[] KnownKeys =
         {
-            "hotkey", "hotkey_short", "seconds", "short_seconds", "fps", "bitrate_mbps", "codec", "monitor",
+            "hotkey", "hotkey_short", "hotkey_record", "hotkey_screenshot", "seconds", "short_seconds", "fps", "bitrate_mbps", "codec", "monitor",
             "game_audio", "mic", "mic_filter", "audio_offset_ms", "record", "games", "game_grace_seconds",
-            "clips", "ffmpeg"
+            "recording_max_minutes", "share_max_mb", "max_storage_gb", "toast", "sound", "sound_volume", "voice_clip", "voice_phrase",
+            "voice_engine", "voice_url", "clips", "ffmpeg"
         };
+        public const string VoiceWindows = "windows", VoiceRioVoice = "riovoice";
 
         private static readonly string[] DefaultGames =
         {
@@ -43,6 +48,10 @@ namespace Rewind
         public readonly string Hotkey;
         /// <summary>Second hotkey for a short clip; empty = none.</summary>
         public readonly string HotkeyShort;
+        /// <summary>Starts and stops a long recording; empty = none.</summary>
+        public readonly string HotkeyRecord;
+        /// <summary>Saves the latest frame as a PNG; empty = none.</summary>
+        public readonly string HotkeyScreenshot;
         public readonly int Seconds;
         public readonly int ShortSeconds;
         public readonly int Fps;
@@ -63,16 +72,38 @@ namespace Rewind
         public readonly ReadOnlyCollection<string> Games;
         /// <summary>In games mode: seconds a game may be out of front before recording pauses.</summary>
         public readonly int GameGraceSeconds;
+        /// <summary>A long recording stops itself after this many minutes.</summary>
+        public readonly int RecordingMaxMinutes;
+        /// <summary>"Copy for Discord" shrinks a clip to fit under this many MB.</summary>
+        public readonly int ShareMaxMb;
+        /// <summary>Oldest clips are deleted once the folder passes this size; 0 = never.</summary>
+        public readonly int MaxStorageGb;
+        /// <summary>Show the on-screen "Clip saved" card (visible over most games) instead of a tray balloon.</summary>
+        public readonly bool Toast;
+        /// <summary>Play Rewind's own chime when a clip / screenshot / recording lands.</summary>
+        public readonly bool Sound;
+        /// <summary>0-100.</summary>
+        public readonly int SoundVolume;
+        /// <summary>Listen on the mic for the phrase and save a clip when it is heard.</summary>
+        public readonly bool VoiceClip;
+        public readonly string VoicePhrase;
+        /// <summary>"windows" = the offline recogniser built into Windows; "riovoice" = Rio's own speech-to-text over a WebSocket.</summary>
+        public readonly string VoiceEngine;
+        /// <summary>The RioVoice streaming endpoint (ws:// or wss://).</summary>
+        public readonly string VoiceUrl;
         public readonly string ClipsFolder;
         /// <summary>Explicit ffmpeg.exe path; empty = find it on PATH.</summary>
         public readonly string FfmpegPath;
 
-        private Config(string hotkey, string hotkeyShort, int seconds, int shortSeconds, int fps, int bitrateMbps,
+        private Config(string hotkey, string hotkeyShort, string hotkeyRecord, string hotkeyScreenshot, int seconds, int shortSeconds, int fps, int bitrateMbps,
             string codec, string monitor, bool gameAudio, bool mic, string micFilter, int audioOffsetMs,
-            string record, IList<string> games, int gameGraceSeconds, string clipsFolder, string ffmpegPath)
+            string record, IList<string> games, int gameGraceSeconds, int recordingMaxMinutes, int shareMaxMb, int maxStorageGb, bool toast,
+            bool sound, int soundVolume, bool voiceClip, string voicePhrase, string voiceEngine, string voiceUrl, string clipsFolder, string ffmpegPath)
         {
             Hotkey = hotkey;
             HotkeyShort = hotkeyShort;
+            HotkeyRecord = hotkeyRecord;
+            HotkeyScreenshot = hotkeyScreenshot;
             Seconds = seconds;
             ShortSeconds = shortSeconds;
             Fps = fps;
@@ -86,6 +117,16 @@ namespace Rewind
             Record = record;
             Games = new ReadOnlyCollection<string>(new List<string>(games));
             GameGraceSeconds = gameGraceSeconds;
+            RecordingMaxMinutes = recordingMaxMinutes;
+            ShareMaxMb = shareMaxMb;
+            MaxStorageGb = maxStorageGb;
+            Toast = toast;
+            Sound = sound;
+            SoundVolume = soundVolume;
+            VoiceClip = voiceClip;
+            VoicePhrase = voicePhrase;
+            VoiceEngine = voiceEngine;
+            VoiceUrl = voiceUrl;
             ClipsFolder = clipsFolder;
             FfmpegPath = ffmpegPath;
         }
@@ -95,8 +136,9 @@ namespace Rewind
         public static Config Defaults()
         {
             var videos = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
-            return new Config("ctrl+alt+p", "ctrl+alt+o", 60, 15, 60, 20, "h264", "primary", true, true,
-                "afftdn=nr=12:nf=-40", 0, RecordAlways, DefaultGames, 45, Path.Combine(videos, "Rewind"), "");
+            return new Config("ctrl+alt+p", "ctrl+alt+o", "ctrl+alt+r", "ctrl+alt+i", 60, 15, 60, 20, "h264", "primary", true, true,
+                "afftdn=nr=12:nf=-40", 0, RecordAlways, DefaultGames, 45, 120, 20, 0, true, true, 80, true, "clip that",
+                VoiceWindows, "wss://thoughts.riomax.com/ws/transcribe", Path.Combine(videos, "Rewind"), "");
         }
 
         /// <summary>Reads the file, writing the default one first if it doesn't exist yet.</summary>
@@ -113,16 +155,12 @@ namespace Rewind
             var d = Defaults();
 
             var hotkey = Get(values, "hotkey", d.Hotkey);
-            var main = HotkeySpec.Parse(hotkey); // validates; throws ConfigException with a clear message
-
-            var hotkeyShort = Get(values, "hotkey_short", d.HotkeyShort);
-            if (hotkeyShort.ToLowerInvariant() == "off") hotkeyShort = "";
-            if (hotkeyShort.Length > 0)
-            {
-                var other = HotkeySpec.Parse(hotkeyShort);
-                if (other.Modifiers == main.Modifiers && other.VirtualKey == main.VirtualKey)
-                    throw new ConfigException("hotkey and hotkey_short are the same key (" + main.Text + "). Give the short clip its own key, or set hotkey_short=off.");
-            }
+            HotkeySpec.Parse(hotkey); // validates; throws ConfigException with a clear message
+            var hotkeyShort = OptionalHotkey(values, "hotkey_short", d.HotkeyShort);
+            var hotkeyRecord = OptionalHotkey(values, "hotkey_record", d.HotkeyRecord);
+            var hotkeyScreenshot = OptionalHotkey(values, "hotkey_screenshot", d.HotkeyScreenshot);
+            CheckDistinct(new[] { "hotkey", "hotkey_short", "hotkey_record", "hotkey_screenshot" },
+                new[] { hotkey, hotkeyShort, hotkeyRecord, hotkeyScreenshot });
 
             var seconds = GetInt(values, "seconds", d.Seconds, MinSeconds, MaxSeconds);
             var shortSeconds = GetInt(values, "short_seconds", d.ShortSeconds, MinShortSeconds, MaxSeconds);
@@ -152,6 +190,25 @@ namespace Rewind
             var games = ParseGames(Get(values, "games", string.Join(", ", d.Games)));
             var grace = GetInt(values, "game_grace_seconds", d.GameGraceSeconds, MinGraceSeconds, MaxGraceSeconds);
 
+            var recordingMax = GetInt(values, "recording_max_minutes", d.RecordingMaxMinutes, MinRecordingMinutes, MaxRecordingMinutes);
+            var shareMax = GetInt(values, "share_max_mb", d.ShareMaxMb, MinShareMb, MaxShareMb);
+            var storageGb = GetInt(values, "max_storage_gb", d.MaxStorageGb, 0, MaxStorageGbLimit);
+            var toast = GetBool(values, "toast", d.Toast);
+            var sound = GetBool(values, "sound", d.Sound);
+            var soundVolume = GetInt(values, "sound_volume", d.SoundVolume, 0, 100);
+            var voiceClip = GetBool(values, "voice_clip", d.VoiceClip);
+            var voicePhrase = Get(values, "voice_phrase", d.VoicePhrase).Trim();
+            if (voicePhrase.Length == 0) voicePhrase = d.VoicePhrase;
+            if (voicePhrase.Length > 40) throw new ConfigException("voice_phrase is too long; keep it to a few words. Got: " + voicePhrase);
+            var voiceEngine = Get(values, "voice_engine", d.VoiceEngine).Trim().ToLowerInvariant();
+            if (voiceEngine != VoiceWindows && voiceEngine != VoiceRioVoice)
+                throw new ConfigException("voice_engine must be windows or riovoice. Got: " + voiceEngine);
+            var voiceUrl = Get(values, "voice_url", d.VoiceUrl).Trim();
+            if (voiceUrl.Length == 0) voiceUrl = d.VoiceUrl;
+            Uri parsedUrl;
+            if (!Uri.TryCreate(voiceUrl, UriKind.Absolute, out parsedUrl) || (parsedUrl.Scheme != "ws" && parsedUrl.Scheme != "wss"))
+                throw new ConfigException("voice_url must start with ws:// or wss://. Got: " + voiceUrl);
+
             var clips = Get(values, "clips", d.ClipsFolder);
             if (clips.Length == 0) clips = d.ClipsFolder; // empty = this user's Videos\Rewind, so config.example.txt carries no one's path
             if (clips.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
@@ -159,8 +216,35 @@ namespace Rewind
 
             var ffmpeg = Get(values, "ffmpeg", d.FfmpegPath);
 
-            return new Config(hotkey, hotkeyShort, seconds, shortSeconds, fps, bitrate, codec, monitor,
-                gameAudio, mic, micFilter, audioOffset, record, games, grace, clips, ffmpeg);
+            return new Config(hotkey, hotkeyShort, hotkeyRecord, hotkeyScreenshot, seconds, shortSeconds, fps, bitrate, codec, monitor,
+                gameAudio, mic, micFilter, audioOffset, record, games, grace, recordingMax, shareMax, storageGb, toast,
+                sound, soundVolume, voiceClip, voicePhrase, voiceEngine, voiceUrl, clips, ffmpeg);
+        }
+
+        /// <summary>A hotkey that may be "off" (returned as empty); anything else must parse.</summary>
+        private static string OptionalHotkey(Dictionary<string, string> values, string key, string fallback)
+        {
+            var text = Get(values, key, fallback);
+            if (text.Trim().ToLowerInvariant() == "off" || text.Trim().Length == 0) return "";
+            HotkeySpec.Parse(text);
+            return text;
+        }
+
+        /// <summary>Two settings on the same key would fight over it: refuse with both names.</summary>
+        private static void CheckDistinct(string[] names, string[] hotkeys)
+        {
+            for (var i = 0; i < hotkeys.Length; i++)
+            {
+                if (hotkeys[i].Length == 0) continue;
+                var a = HotkeySpec.Parse(hotkeys[i]);
+                for (var j = i + 1; j < hotkeys.Length; j++)
+                {
+                    if (hotkeys[j].Length == 0) continue;
+                    var b = HotkeySpec.Parse(hotkeys[j]);
+                    if (a.Modifiers == b.Modifiers && a.VirtualKey == b.VirtualKey)
+                        throw new ConfigException(string.Format("{0} and {1} are the same key ({2}). Give each its own key, or set one of them to off.", names[i], names[j], a.Text));
+                }
+            }
         }
 
         /// <summary>"javaw, cs2.exe; Roblox" -> javaw, cs2, Roblox: trimmed, .exe dropped, empties and repeats gone.</summary>
@@ -185,6 +269,8 @@ namespace Rewind
             var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             values["hotkey"] = Hotkey;
             values["hotkey_short"] = HotkeyShort.Length > 0 ? HotkeyShort : "off";
+            values["hotkey_record"] = HotkeyRecord.Length > 0 ? HotkeyRecord : "off";
+            values["hotkey_screenshot"] = HotkeyScreenshot.Length > 0 ? HotkeyScreenshot : "off";
             values["seconds"] = Seconds.ToString(CultureInfo.InvariantCulture);
             values["short_seconds"] = ShortSeconds.ToString(CultureInfo.InvariantCulture);
             values["fps"] = Fps.ToString(CultureInfo.InvariantCulture);
@@ -198,6 +284,16 @@ namespace Rewind
             values["record"] = Record;
             values["games"] = string.Join(", ", Games);
             values["game_grace_seconds"] = GameGraceSeconds.ToString(CultureInfo.InvariantCulture);
+            values["recording_max_minutes"] = RecordingMaxMinutes.ToString(CultureInfo.InvariantCulture);
+            values["share_max_mb"] = ShareMaxMb.ToString(CultureInfo.InvariantCulture);
+            values["max_storage_gb"] = MaxStorageGb.ToString(CultureInfo.InvariantCulture);
+            values["toast"] = Toast ? "on" : "off";
+            values["sound"] = Sound ? "on" : "off";
+            values["sound_volume"] = SoundVolume.ToString(CultureInfo.InvariantCulture);
+            values["voice_clip"] = VoiceClip ? "on" : "off";
+            values["voice_phrase"] = VoicePhrase;
+            values["voice_engine"] = VoiceEngine;
+            values["voice_url"] = VoiceUrl;
             values["clips"] = ClipsFolder;
             values["ffmpeg"] = FfmpegPath;
             return values;
@@ -225,6 +321,8 @@ namespace Rewind
             sb.AppendLine();
             Line(sb, values, d, "hotkey", "Press this to save the last <seconds> as a clip. Examples: ctrl+alt+p, F9, shift+F10");
             Line(sb, values, d, "hotkey_short", "A second key that saves just the last <short_seconds>. off = no second key.");
+            Line(sb, values, d, "hotkey_record", "Starts a long recording; press again to stop and save it. off = no key.");
+            Line(sb, values, d, "hotkey_screenshot", "Saves the latest frame as a PNG (and copies it, ready to paste). off = no key.");
             Line(sb, values, d, "seconds", "How far back a clip reaches, in seconds (5-600). Memory use is about bitrate x seconds / 8 MB.");
             Line(sb, values, d, "short_seconds", "How far back the short clip reaches, in seconds (3 up to seconds-1).");
             Line(sb, values, d, "fps", "Frames per second to record (15-240).");
@@ -238,6 +336,16 @@ namespace Rewind
             Line(sb, values, d, "record", "always = record all the time. games = only while a game is in front (see games= below).");
             Line(sb, values, d, "games", "Apps that count as a game even in a window (process names, comma separated). Any app covering the whole monitor counts too.");
             Line(sb, values, d, "game_grace_seconds", "In games mode: how long a game can be out of front before recording pauses (5-600 s).");
+            Line(sb, values, d, "recording_max_minutes", "A long recording stops itself after this many minutes (1-600). About 150 MB per minute at 20 Mbps.");
+            Line(sb, values, d, "share_max_mb", "Copy for Discord shrinks a clip to fit under this many MB (1-500). Discord's free limit is 20.");
+            Line(sb, values, d, "max_storage_gb", "Delete the oldest clips once the clips folder passes this many GB. 0 = never delete anything.");
+            Line(sb, values, d, "toast", "on = a small \"Clip saved\" card on screen (shows over most games). off = tray balloons only.");
+            Line(sb, values, d, "sound", "Play a chime when a clip, screenshot or recording lands. Drop your own clip.wav next to Rewind.exe to change it.");
+            Line(sb, values, d, "sound_volume", "How loud the chime is (0-100).");
+            Line(sb, values, d, "voice_clip", "on = saying the phrase below into the mic saves a clip, like Medal's \"clip that\".");
+            Line(sb, values, d, "voice_phrase", "What to say. Two or three clear words work best.");
+            Line(sb, values, d, "voice_engine", "windows = the recogniser built into Windows (offline). riovoice = a RioVoice speech-to-text server (more accurate).");
+            Line(sb, values, d, "voice_url", "The RioVoice streaming address (only used with voice_engine=riovoice).");
             Line(sb, values, d, "clips", "Where clips go. Leave empty for your own Videos\\Rewind folder.");
             Line(sb, values, d, "ffmpeg", "Leave empty to use the ffmpeg on PATH, or give a full path to ffmpeg.exe.");
             return sb.ToString().TrimEnd() + Environment.NewLine;

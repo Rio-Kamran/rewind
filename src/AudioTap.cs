@@ -477,8 +477,8 @@ namespace Rewind
             }
         }
 
-        /// <summary>Reads a WAVEFORMATEX(TENSIBLE) into the three facts ffmpeg needs.</summary>
-        private static PcmFormat ReadFormat(IntPtr p)
+        /// <summary>Reads a WAVEFORMATEX(TENSIBLE) into the three facts ffmpeg needs. Shared with the RioVoice mic.</summary>
+        internal static PcmFormat ReadFormat(IntPtr p)
         {
             var tag = (ushort)Marshal.ReadInt16(p, 0);
             var channels = (ushort)Marshal.ReadInt16(p, 2);
@@ -514,12 +514,12 @@ namespace Rewind
             return new PcmFormat(sampleFormat, rate, channels, blockAlign);
         }
 
-        private static void Check(int hr, string what)
+        internal static void Check(int hr, string what)
         {
             if (hr < 0) throw new COMException(what + " failed (0x" + hr.ToString("x8") + ")", hr);
         }
 
-        private static void ReleaseSafely(object comObject)
+        internal static void ReleaseSafely(object comObject)
         {
             if (comObject == null) return;
             try { Marshal.ReleaseComObject(comObject); }

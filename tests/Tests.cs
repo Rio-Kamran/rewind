@@ -406,9 +406,283 @@ namespace Rewind.Tests
                 Throws<ArgumentOutOfRangeException>(() => CaptureFault.LooksAudioOnly(1, minute, 0));
             });
 
+            // ---- the Medal features (2026-09-22) ----
+
+            Run("config: medal-feature defaults", () =>
+            {
+                var c = Config.Parse("");
+                Equal("ctrl+alt+r", c.HotkeyRecord); Equal("ctrl+alt+i", c.HotkeyScreenshot);
+                Equal(120, c.RecordingMaxMinutes); Equal(20, c.ShareMaxMb); Equal(0, c.MaxStorageGb);
+                True(c.Toast, "toast on"); True(c.Sound, "sound on"); Equal(80, c.SoundVolume);
+                True(c.VoiceClip, "voice on"); Equal("clip that", c.VoicePhrase);
+            });
+            Run("config: any two hotkeys on one key are refused, off is allowed", () =>
+            {
+                Throws<ConfigException>(() => Config.Parse("hotkey_record=ctrl+alt+p"));
+                Throws<ConfigException>(() => Config.Parse("hotkey_screenshot=Alt+Ctrl+O"));
+                Throws<ConfigException>(() => Config.Parse("hotkey_record=F7\nhotkey_screenshot=f7"));
+                Equal("", Config.Parse("hotkey_record=off").HotkeyRecord);
+                Equal("", Config.Parse("hotkey_screenshot=").HotkeyScreenshot);
+                Equal("F7", Config.Parse("hotkey_record=F7").HotkeyRecord);
+            });
+            Run("config: medal-feature ranges", () =>
+            {
+                Throws<ConfigException>(() => Config.Parse("sound_volume=101"));
+                Throws<ConfigException>(() => Config.Parse("recording_max_minutes=0"));
+                Throws<ConfigException>(() => Config.Parse("share_max_mb=0"));
+                Throws<ConfigException>(() => Config.Parse("max_storage_gb=-1"));
+                Throws<ConfigException>(() => Config.Parse("voice_phrase=" + new string('x', 41)));
+                Throws<ConfigException>(() => Config.Parse("toast=sometimes"));
+                Equal("clip that", Config.Parse("voice_phrase=   ").VoicePhrase);
+                Equal(0, Config.Parse("sound_volume=0").SoundVolume);
+            });
+            Run("config: medal-feature values round-trip through text", () =>
+            {
+                var c = Config.Parse("hotkey_record=off\nhotkey_screenshot=F12\nrecording_max_minutes=30\nshare_max_mb=50\nmax_storage_gb=200\ntoast=off\nsound=off\nsound_volume=35\nvoice_clip=off\nvoice_phrase=save that");
+                var back = Config.Parse(c.Text());
+                Equal("", back.HotkeyRecord); Equal("F12", back.HotkeyScreenshot); Equal(30, back.RecordingMaxMinutes); Equal(50, back.ShareMaxMb);
+                Equal(200, back.MaxStorageGb); True(!back.Toast && !back.Sound && !back.VoiceClip, "all off"); Equal(35, back.SoundVolume); Equal("save that", back.VoicePhrase);
+                Contains(c.Text(), "hotkey_record=off" + Environment.NewLine);
+            });
+
+            Run("tscut: PlanLast takes the newest keyframe and the newest tables before it", () =>
+            {
+                var key = TsPacket(256, true, true, Payload(1));
+                var rest = TsPacket(256, false, false, Payload(2));
+                var pat2 = TsPacket(0, true, false, Pat(4096));
+                var all = Join(pat, pmt, key, rest, pat2, pmt, key, rest);
+                var first = TsCut.Plan(Split(all, 500));
+                var last = TsCut.PlanLast(Split(all, 500));
+                Equal(188L * 2, first.TrimmedBytes);
+                Equal(188L * 6, last.TrimmedBytes);
+                True(last.Clean, "clean");
+                Equal(BitConverter.ToString(Join(pat2, pmt)), BitConverter.ToString(last.Prefix));
+                True(!TsCut.PlanLast(Split(Join(pat, pmt, rest, rest), 300)).Clean, "no keyframe = raw");
+            });
+
+            Run("screenshot: the last complete BMP in a stream, torn tails ignored", () =>
+            {
+                var a = Bmp(200, 0xAA);
+                var b = Bmp(300, 0xBB);
+                var torn = new byte[100];
+                Buffer.BlockCopy(Bmp(500, 0xCC), 0, torn, 0, 100);
+                Equal(BitConverter.ToString(b), BitConverter.ToString(Screenshot.LastBmp(new MemoryStream(Join(a, b, torn)))));
+                Equal(BitConverter.ToString(a), BitConverter.ToString(Screenshot.LastBmp(new MemoryStream(a))));
+                True(Screenshot.LastBmp(new MemoryStream(new byte[0])) == null, "empty");
+                True(Screenshot.LastBmp(new MemoryStream(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 })) == null, "garbage");
+            });
+
+            Run("share plan: fits as it is under the limit", () =>
+            {
+                var p = SharePlan.For(19000000, 60, 20, 1440, 2);
+                True(!p.NeedsEncode, "no encode"); Equal(20000000L, p.LimitBytes); Equal("fits as it is", p.ToString());
+            });
+            Run("share plan: a minute at 150 MB into 20 MB is 720p30 at ~2.4 Mbps", () =>
+            {
+                var p = SharePlan.For(150000000, 60, 20, 1440, 2);
+                True(p.NeedsEncode, "encode"); Equal(96, p.AudioKbps); Equal(2357, p.VideoKbps); Equal(720, p.Height); Equal(30, p.Fps);
+                Contains(p.ToString(), "2357 kbps video + 96 kbps audio, 720p, 30 fps");
+            });
+            Run("share plan: ten seconds keeps 1080p and full fps; a 720p source is not upscaled; no audio = no audio bits", () =>
+            {
+                var p = SharePlan.For(36000000, 10, 20, 1440, 2);
+                Equal(14624, p.VideoKbps); Equal(1080, p.Height); Equal(0, p.Fps);
+                Equal(0, SharePlan.For(36000000, 10, 20, 720, 2).Height);
+                Equal(0, SharePlan.For(36000000, 10, 20, 1440, 0).AudioKbps);
+                Equal(14720, SharePlan.For(36000000, 10, 20, 1440, 0).VideoKbps);
+            });
+            Run("share plan: shrunk scales the bitrate by how far over it landed", () =>
+            {
+                var p = SharePlan.For(36000000, 10, 20, 1440, 2);
+                var s = p.Shrunk(22000000);
+                True(s.VideoKbps < p.VideoKbps, "smaller"); Equal(12629, s.VideoKbps); Equal(1080, s.Height);
+                Equal(250, SharePlan.For(600000000, 600, 1, 1440, 2).VideoKbps);
+                Throws<ArgumentOutOfRangeException>(() => SharePlan.For(1, 0, 20, 1440, 2));
+            });
+
+            Run("storage: oldest go first until it fits; the newest always stays; 0 = never", () =>
+            {
+                var t0 = new DateTime(2026, 9, 1);
+                var mb = 1048576L;
+                var clips = new List<ClipInfo>
+                {
+                    new ClipInfo(@"C:\v\b.mp4", "", "", t0.AddDays(1), 100 * mb, null),
+                    new ClipInfo(@"C:\v\a.mp4", "", "", t0, 100 * mb, null),
+                    new ClipInfo(@"C:\v\c.png", "", "", t0.AddDays(2), 100 * mb, null)
+                };
+                var doomed = StoragePolicy.ToDelete(clips, 150 * mb);
+                Equal(2, doomed.Count); Equal(@"C:\v\a.mp4", doomed[0].Path); Equal(@"C:\v\b.mp4", doomed[1].Path);
+                Equal(1, StoragePolicy.ToDelete(clips, 250 * mb).Count);
+                Equal(0, StoragePolicy.ToDelete(clips, 300 * mb).Count);
+                Equal(0, StoragePolicy.ToDelete(clips, 0).Count);
+                Equal(2, StoragePolicy.ToDelete(clips, 1).Count); // even a cap below one clip keeps the newest
+                Equal(0, StoragePolicy.ToDelete(new List<ClipInfo> { clips[0] }, 1).Count);
+            });
+
+            Run("ffmpeg: recording remux reads the .ts file, no faststart", () =>
+            {
+                var a = FfmpegArgs.RemuxFile(@"C:\v\r.ts", @"C:\v\r.mp4", new[] { "Game", "Mic" }, "h264");
+                Equal("-hide_banner -loglevel error -nostdin -y -f mpegts -i \"C:\\v\\r.ts\" -map 0:v -map 0:a? -c copy -metadata:s:a:0 handler_name=\"Game\" -metadata:s:a:1 handler_name=\"Mic\" \"C:\\v\\r.mp4\"", a);
+                True(!a.Contains("faststart"), "no faststart");
+                Contains(FfmpegArgs.RemuxFile("a.ts", "b.mp4", new string[0], "hevc"), "-c copy -tag:v hvc1 \"b.mp4\"");
+            });
+            Run("ffmpeg: screenshot line decodes stdin to BMPs on stdout", () =>
+                Equal("-hide_banner -loglevel error -nostdin -f mpegts -i pipe:0 -map 0:v -an -fps_mode passthrough -f image2pipe -c:v bmp pipe:1", FfmpegArgs.Screenshot()));
+            Run("ffmpeg: share line mixes the tracks and scales", () =>
+            {
+                var plan = SharePlan.For(150000000, 60, 20, 1440, 2);
+                var a = FfmpegArgs.Share(@"C:\v\a.mp4", @"C:\v\a share.mp4", plan, 2);
+                Contains(a, "-y -i \"C:\\v\\a.mp4\" -map 0:v -filter_complex \"[0:a:0][0:a:1]amix=inputs=2:duration=first:normalize=0[a]\" -map \"[a]\" -vf \"scale=-2:720,fps=30\" -c:v h264_nvenc -preset p5 -tune hq -profile:v high -rc cbr -b:v 2357k -maxrate 2357k -bufsize 4714k -pix_fmt yuv420p -c:a aac -b:a 96k -ac 2 -movflags +faststart \"C:\\v\\a share.mp4\"");
+                var one = FfmpegArgs.Share("a.mp4", "b.mp4", SharePlan.For(36000000, 10, 20, 1440, 1), 1);
+                Contains(one, "-map 0:v -map 0:a:0 -vf \"scale=-2:1080\" -c:v h264_nvenc");
+                True(!one.Contains("fps="), "full fps kept");
+                var silent = FfmpegArgs.Share("a.mp4", "b.mp4", SharePlan.For(36000000, 10, 20, 720, 0), 0);
+                Contains(silent, "-map 0:v -an -c:v h264_nvenc");
+                True(!silent.Contains("-vf") && !silent.Contains("-c:a"), "no scale, no audio");
+                Throws<ArgumentException>(() => FfmpegArgs.Share("a", "b", SharePlan.For(1, 1, 20, 720, 0), 0));
+            });
+            Run("ffmpeg: gif line does palette and use in one run", () =>
+            {
+                var a = FfmpegArgs.Gif(@"C:\v\a.mp4", @"C:\v\a.gif", 2.5, 3);
+                Equal("-hide_banner -loglevel error -nostdin -y -ss 2.5 -t 3 -i \"C:\\v\\a.mp4\" -an -filter_complex \"fps=15,scale=480:-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle\" -loop 0 \"C:\\v\\a.gif\"", a);
+                Throws<ArgumentOutOfRangeException>(() => FfmpegArgs.Gif("a", "b", -1, 3));
+            });
+
+            Run("clips: every file Rewind writes is named the same way", () =>
+            {
+                var when = new DateTime(2026, 9, 22, 18, 5, 9);
+                Equal("Rewind Fortnite 2026-09-22 18-05-09.mp4", ClipLibrary.NewName("FortniteClient-Win64-Shipping", when, "", "mp4"));
+                Equal("Rewind 2026-09-22 18-05-09.png", ClipLibrary.NewName("", when, "", "png"));
+                Equal("Rewind Minecraft 2026-09-22 18-05-09 recording.ts", ClipLibrary.NewName("javaw", when, "recording", "ts"));
+                Equal("Rewind 2026-09-22 18-05-09 recording 2.ts", ClipLibrary.NewName("Rewind", when, "recording 2", "ts"));
+            });
+            Run("clips: screenshots and recordings parse and show as such", () =>
+            {
+                string game, suffix;
+                DateTime taken;
+                True(ClipLibrary.TryParseName("Rewind Fortnite 2026-09-22 18-05-09.png", out game, out taken, out suffix), "png parses");
+                Equal("Fortnite", game); Equal("", suffix);
+                var shot = ClipLibrary.Describe(@"C:\v\Rewind Fortnite 2026-09-22 18-05-09.png", 10, DateTime.Now);
+                True(shot.IsImage, "is image"); Equal("Fortnite (screenshot)", shot.Title);
+                var rec = ClipLibrary.Describe(@"C:\v\Rewind 2026-09-22 18-05-09 recording.mp4", 10, DateTime.Now);
+                True(!rec.IsImage, "video"); Equal("Desktop (recording)", rec.Title);
+                True(!ClipLibrary.TryParseName("Rewind 2026-09-22 18-05-09 recording.ts", out game, out taken, out suffix), ".ts is not a clip");
+                Equal(@"C:\v\a.gif", ClipLibrary.CopyName(@"C:\v\a.mp4", "", "gif", p => false));
+                Equal(@"C:\v\a 2.gif", ClipLibrary.CopyName(@"C:\v\a.mp4", "", "gif", p => p == @"C:\v\a.gif"));
+            });
+            Run("probe: height, audio tracks and the inspect line", () =>
+            {
+                var output = "Input #0, mov,mp4\n  Duration: 00:00:15.90, start: 0.000000, bitrate: 19 kb/s\n"
+                    + "  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(tv, progressive), 2560x1440 [SAR 1:1 DAR 16:9], 18888 kb/s, 60 fps\n"
+                    + "  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 191 kb/s\n"
+                    + "  Stream #0:2[0x3](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, mono, fltp, 69 kb/s\n";
+                Equal(1440, ClipProbe.ParseHeight(output)); Equal(2, ClipProbe.ParseAudioTracks(output));
+                Equal(0, ClipProbe.ParseHeight("nothing")); Equal(0, ClipProbe.ParseAudioTracks(""));
+                Equal("-hide_banner -nostdin -i \"C:\\v\\a.mp4\"", ClipProbe.InspectArgs(@"C:\v\a.mp4"));
+                Contains(ClipProbe.ThumbArgs(@"C:\v\a.png", @"C:\t\k.jpg", true), "-y -i \"C:\\v\\a.png\" -frames:v 1");
+                True(!ClipProbe.ThumbArgs(@"C:\v\a.png", @"C:\t\k.jpg", true).Contains("-ss"), "no seek into a still");
+            });
+
+            Run("sounds: a real WAV comes out, silent at volume 0, different per chime", () =>
+            {
+                var wav = Sounds.Wav(Chime.Clip, 80);
+                Equal("RIFF", System.Text.Encoding.ASCII.GetString(wav, 0, 4)); Equal("WAVE", System.Text.Encoding.ASCII.GetString(wav, 8, 4));
+                Equal(wav.Length - 8, BitConverter.ToInt32(wav, 4)); Equal(wav.Length - 44, BitConverter.ToInt32(wav, 40));
+                Equal(Sounds.SampleRate, BitConverter.ToInt32(wav, 24)); Equal((short)16, BitConverter.ToInt16(wav, 34));
+                True(wav.Length > 44 + Sounds.SampleRate / 2, "at least a quarter second");
+                var loud = 0;
+                for (var i = 44; i < wav.Length; i += 2) if (Math.Abs(BitConverter.ToInt16(wav, i)) > 8000) loud++;
+                True(loud > 1000, "has sound in it");
+                var quiet = Sounds.Wav(Chime.Clip, 0);
+                for (var i = 44; i < quiet.Length; i += 2) if (BitConverter.ToInt16(quiet, i) != 0) throw new Exception("volume 0 should be silent");
+                True(Sounds.Wav(Chime.Screenshot, 80).Length != wav.Length || BitConverter.ToString(Sounds.Wav(Chime.Screenshot, 80)) != BitConverter.ToString(wav), "chimes differ");
+                Equal("record-stop.wav", Sounds.FileName(Chime.RecordStop)); Equal("clip.wav", Sounds.FileName(Chime.Clip));
+                Throws<ArgumentOutOfRangeException>(() => Sounds.Wav(Chime.Clip, 101));
+            });
+
+            Run("config: voice engine and url", () =>
+            {
+                var c = Config.Parse("");
+                Equal("windows", c.VoiceEngine); Equal("wss://thoughts.riomax.com/ws/transcribe", c.VoiceUrl);
+                Equal("riovoice", Config.Parse("voice_engine=RioVoice").VoiceEngine);
+                Equal("ws://10.0.0.5:9100/ws/transcribe", Config.Parse("voice_url=ws://10.0.0.5:9100/ws/transcribe").VoiceUrl);
+                Equal(c.VoiceUrl, Config.Parse("voice_url=").VoiceUrl);
+                Throws<ConfigException>(() => Config.Parse("voice_engine=siri"));
+                Throws<ConfigException>(() => Config.Parse("voice_url=https://example.com"));
+                Contains(Config.Parse("voice_engine=riovoice").Text(), "voice_engine=riovoice" + Environment.NewLine);
+            });
+
+            Run("speech: 48 kHz stereo float becomes 16 kHz mono int16", () =>
+            {
+                var format = new PcmFormat("f32le", 48000, 2, 8);
+                var raw = new byte[8 * 480]; // 10 ms of stereo float
+                for (var f = 0; f < 480; f++)
+                {
+                    Buffer.BlockCopy(BitConverter.GetBytes(0.5f), 0, raw, f * 8, 4);
+                    Buffer.BlockCopy(BitConverter.GetBytes(-0.5f), 0, raw, f * 8 + 4, 4);
+                }
+                var mono = SpeechGate.ToMono(raw, raw.Length, format);
+                Equal(480, mono.Length); Equal(0f, mono[10]);
+                var loud = new float[480];
+                for (var i = 0; i < loud.Length; i++) loud[i] = 0.25f;
+                var pcm = SpeechGate.ToPcm16k(loud, 48000);
+                Equal(160 * 2, pcm.Length); Equal((short)8192, BitConverter.ToInt16(pcm, 100));
+                Equal(0, SpeechGate.ToPcm16k(new float[0], 48000).Length);
+                True(Math.Abs(SpeechGate.Rms(loud) - 0.25) < 0.0001, "rms");
+                var s16 = new PcmFormat("s16le", 16000, 1, 2);
+                Equal(1f, SpeechGate.ToMono(new byte[] { 0xff, 0x7f }, 2, s16)[0] > 0.99f ? 1f : 0f);
+            });
+            Run("speech: the phrase is found once, whatever the punctuation", () =>
+            {
+                int upTo;
+                True(SpeechGate.Heard("Okay, CLIP THAT!", "clip that", 0, out upTo), "found"); Equal(16, upTo);
+                True(!SpeechGate.Heard("Okay, CLIP THAT!", "clip that", upTo, out upTo), "not twice");
+                True(SpeechGate.Heard("Okay, clip that. Nice. Clip that again", "clip that", 16, out upTo), "again later");
+                True(!SpeechGate.Heard("the clipthat", "clip that", 0, out upTo), "no glued words");
+                True(!SpeechGate.Heard("clip", "clip that", 0, out upTo), "half is not enough");
+                True(!SpeechGate.Heard("", "clip that", 0, out upTo), "empty");
+                Equal("clip that", SpeechGate.Normalize("  Clip,  THAT! "));
+            });
+            Run("speech: the ASR reply is read", () =>
+            {
+                Equal("clip that", SpeechGate.ParseText("{\"text\": \"clip that\", \"final\": false, \"capped\": false}"));
+                Equal("he said \"go\"", SpeechGate.ParseText("{\"text\": \"he said \\\"go\\\"\", \"final\": true}"));
+                Equal("", SpeechGate.ParseText("{\"text\": \"\", \"final\": true}"));
+                True(SpeechGate.ParseText("{\"detail\": \"nope\"}") == null, "no text field");
+                True(SpeechGate.IsFinal("{\"text\": \"x\", \"final\": true}"), "final");
+                True(!SpeechGate.IsFinal("{\"text\": \"x\", \"final\": false, \"capped\": false}"), "not final");
+            });
+            Run("speech: the gate opens on a loud slice and closes after quiet or the maximum", () =>
+            {
+                var gate = new VoiceActivity(3, 10);
+                for (var i = 0; i < 50; i++) Equal(GateEvent.Quiet, gate.Feed(0.002));
+                True(gate.RoomLevel < 0.01, "room level learned low");
+                Equal(GateEvent.Started, gate.Feed(0.2));
+                Equal(GateEvent.Speaking, gate.Feed(0.15));
+                Equal(GateEvent.Speaking, gate.Feed(0.001));
+                Equal(GateEvent.Speaking, gate.Feed(0.001));
+                Equal(GateEvent.Ended, gate.Feed(0.001));
+                Equal(GateEvent.Started, gate.Feed(0.3));
+                for (var i = 0; i < 8; i++) Equal(GateEvent.Speaking, gate.Feed(0.3));
+                Equal(GateEvent.Ended, gate.Feed(0.3)); // ten slices: cut
+                True(!gate.Speaking, "closed");
+                Equal(GateEvent.Quiet, gate.Feed(0.006)); // under the floor: never speech
+                Throws<ArgumentOutOfRangeException>(() => new VoiceActivity(0, 1));
+            });
+
             Console.WriteLine();
             Console.WriteLine(string.Format("{0} passed, {1} failed", _passed, _failed));
             return _failed == 0 ? 0 : 1;
+        }
+
+        /// <summary>A fake BMP: the 'BM' magic, the file size, then filler.</summary>
+        private static byte[] Bmp(int size, byte fill)
+        {
+            var bytes = new byte[size];
+            for (var i = 0; i < size; i++) bytes[i] = fill;
+            bytes[0] = (byte)'B'; bytes[1] = (byte)'M';
+            bytes[2] = (byte)size; bytes[3] = (byte)(size >> 8); bytes[4] = (byte)(size >> 16); bytes[5] = (byte)(size >> 24);
+            return bytes;
         }
 
         // ---- synthetic MPEG-TS packets for the TsCut tests ----

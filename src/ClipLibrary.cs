@@ -32,13 +32,20 @@ namespace Rewind
             Duration = duration;
         }
 
-        /// <summary>"Fortnite", "Desktop" for unnamed clips, plus the suffix: "Fortnite (trim)".</summary>
+        /// <summary>A screenshot (PNG) rather than a video.</summary>
+        public bool IsImage
+        {
+            get { return Path.EndsWith(".png", StringComparison.OrdinalIgnoreCase); }
+        }
+
+        /// <summary>"Fortnite", "Desktop" for unnamed clips, plus the suffix: "Fortnite (trim)"; screenshots say so.</summary>
         public string Title
         {
             get
             {
                 var title = Game.Length > 0 ? Game : "Desktop";
-                return Suffix.Length > 0 ? title + " (" + Suffix + ")" : title;
+                var note = Suffix.Length > 0 ? Suffix : IsImage ? "screenshot" : "";
+                return note.Length > 0 ? title + " (" + note + ")" : title;
             }
         }
 
@@ -52,20 +59,23 @@ namespace Rewind
     internal static class ClipLibrary
     {
         private static readonly Regex NamePattern = new Regex(
-            @"^Rewind (?:(?<game>.+?) )?(?<date>\d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2})(?: (?<suffix>.+?))?\.mp4$",
+            @"^Rewind (?:(?<game>.+?) )?(?<date>\d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2})(?: (?<suffix>.+?))?\.(?:mp4|png)$",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
-        /// <summary>Every .mp4 in the folder, newest first. A missing or unreadable folder is an empty list.</summary>
+        /// <summary>Every .mp4 and .png in the folder, newest first. A missing or unreadable folder is an empty list.</summary>
         public static IList<ClipInfo> Scan(string folder)
         {
             var clips = new List<ClipInfo>();
             if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder)) return clips.AsReadOnly();
             try
             {
-                foreach (var path in Directory.GetFiles(folder, "*.mp4"))
+                foreach (var pattern in new[] { "*.mp4", "*.png" })
                 {
-                    var file = new FileInfo(path);
-                    clips.Add(Describe(path, file.Length, file.LastWriteTime));
+                    foreach (var path in Directory.GetFiles(folder, pattern))
+                    {
+                        var file = new FileInfo(path);
+                        clips.Add(Describe(path, file.Length, file.LastWriteTime));
+                    }
                 }
             }
             catch (IOException error)
@@ -111,16 +121,32 @@ namespace Rewind
             return true;
         }
 
+        /// <summary>"Rewind Fortnite 2026-09-08 19-27-28 recording.ts": the name every file Rewind writes follows.</summary>
+        public static string NewName(string game, DateTime when, string suffix, string extension)
+        {
+            if (string.IsNullOrEmpty(extension)) throw new ArgumentException("extension");
+            game = ForegroundApp.Clean(game ?? "");
+            return string.Format("Rewind {0}{1:yyyy-MM-dd HH-mm-ss}{2}.{3}", game.Length > 0 ? game + " " : "", when,
+                string.IsNullOrEmpty(suffix) ? "" : " " + suffix, extension);
+        }
+
         /// <summary>A sibling name for a copy of the clip: "<name> trim.mp4", numbered if that exists.</summary>
         public static string CopyName(string clipPath, string suffix, Func<string, bool> exists)
         {
+            return CopyName(clipPath, suffix, "mp4", exists);
+        }
+
+        /// <summary>The same with another extension: "<name>.gif" (suffix may be empty).</summary>
+        public static string CopyName(string clipPath, string suffix, string extension, Func<string, bool> exists)
+        {
             if (string.IsNullOrEmpty(clipPath)) throw new ArgumentException("clipPath");
+            if (string.IsNullOrEmpty(extension)) throw new ArgumentException("extension");
             if (exists == null) throw new ArgumentNullException("exists");
             var folder = Path.GetDirectoryName(clipPath) ?? "";
-            var stem = Path.GetFileNameWithoutExtension(clipPath);
-            var candidate = Path.Combine(folder, stem + " " + suffix + ".mp4");
+            var stem = Path.GetFileNameWithoutExtension(clipPath) + (string.IsNullOrEmpty(suffix) ? "" : " " + suffix);
+            var candidate = Path.Combine(folder, stem + "." + extension);
             for (var n = 2; exists(candidate); n++)
-                candidate = Path.Combine(folder, stem + " " + suffix + " " + n + ".mp4");
+                candidate = Path.Combine(folder, stem + " " + n + "." + extension);
             return candidate;
         }
     }

@@ -18,11 +18,13 @@ namespace Rewind
     /// <summary>
     /// An invisible message-only window whose only job is to own the global hotkeys. Windows
     /// posts WM_HOTKEY here whenever a combo is pressed in any app, including a fullscreen game.
-    /// Slot 0 is the full clip, slot 1 the short one.
+    /// Slot 0 is the full clip, slot 1 the short one, slot 2 starts/stops a long recording,
+    /// slot 3 takes a screenshot.
     /// </summary>
     internal sealed class HotkeyWindow : NativeWindow, IDisposable
     {
-        public const int Slots = 2;
+        public const int Slots = 4;
+        public const int ClipSlot = 0, ShortSlot = 1, RecordSlot = 2, ScreenshotSlot = 3;
         private const int WmHotkey = 0x0312;
         private const int FirstHotkeyId = 0x5257; // 'RW'
         private const int ErrorHotkeyAlreadyRegistered = 1409;

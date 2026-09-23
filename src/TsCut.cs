@@ -52,18 +52,31 @@ namespace Rewind
         private static readonly byte[] VideoTypes = { 0x01, 0x02, 0x10, 0x1b, 0x24, 0x42, 0xd1, 0xea };
         private static readonly byte[] AudioTypes = { 0x03, 0x04, 0x0f, 0x11, 0x1c, 0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x8a, 0x91 };
 
+        /// <summary>The first keyframe in the slice: where a clip of "the last N seconds" starts.</summary>
         public static CutPlan Plan(IList<Chunk> chunks)
+        {
+            return Scan(chunks, false);
+        }
+
+        /// <summary>The newest keyframe in the slice: where a screenshot or a long recording starts (at most a second back).</summary>
+        public static CutPlan PlanLast(IList<Chunk> chunks)
+        {
+            return Scan(chunks, true);
+        }
+
+        private static CutPlan Scan(IList<Chunk> chunks, bool newest)
         {
             if (chunks == null) throw new ArgumentNullException("chunks");
             var reader = new Reader(chunks);
             if (reader.Total < PacketSize * 3) return CutPlan.Raw();
-            var limit = Math.Min(reader.Total, MaxScanBytes);
+            var limit = newest ? reader.Total : Math.Min(reader.Total, MaxScanBytes);
 
             var pos = Resync(reader, 0, limit);
             if (pos < 0) return CutPlan.Raw();
 
             int pmtPid = -1, videoPid = -1;
             long lastPat = -1, lastPmt = -1;
+            CutPlan plan = null;
             while (pos + PacketSize <= limit)
             {
                 if (reader.At(pos) != SyncByte)
@@ -103,11 +116,12 @@ namespace Rewind
                     reader.CopyTo(lastPmt, prefix, PacketSize, PacketSize);
                     int offset;
                     var chunk = reader.ChunkAt(pos, out offset);
-                    return new CutPlan(prefix, chunk, offset, true, pos);
+                    plan = new CutPlan(prefix, chunk, offset, true, pos);
+                    if (!newest) return plan;
                 }
                 pos += PacketSize;
             }
-            return CutPlan.Raw();
+            return plan ?? CutPlan.Raw();
         }
 
         /// <summary>First position at or after from where three packets in a row start with the sync byte.</summary>

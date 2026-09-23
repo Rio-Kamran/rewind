@@ -7,6 +7,12 @@ hotkey=ctrl+alt+p
 # A second key that saves just the last <short_seconds>. off = no second key.
 hotkey_short=ctrl+alt+o
 
+# Starts a long recording; press again to stop and save it. off = no key.
+hotkey_record=ctrl+alt+r
+
+# Saves the latest frame as a PNG (and copies it, ready to paste). off = no key.
+hotkey_screenshot=ctrl+alt+i
+
 # How far back a clip reaches, in seconds (5-600). Memory use is about bitrate x seconds / 8 MB.
 seconds=60
 
@@ -45,6 +51,36 @@ games=javaw, FortniteClient-Win64-Shipping, RobloxPlayerBeta, RocketLeague, Geom
 
 # In games mode: how long a game can be out of front before recording pauses (5-600 s).
 game_grace_seconds=45
+
+# A long recording stops itself after this many minutes (1-600). About 150 MB per minute at 20 Mbps.
+recording_max_minutes=120
+
+# Copy for Discord shrinks a clip to fit under this many MB (1-500). Discord's free limit is 20.
+share_max_mb=20
+
+# Delete the oldest clips once the clips folder passes this many GB. 0 = never delete anything.
+max_storage_gb=0
+
+# on = a small "Clip saved" card on screen (shows over most games). off = tray balloons only.
+toast=on
+
+# Play a chime when a clip, screenshot or recording lands. Drop your own clip.wav next to Rewind.exe to change it.
+sound=on
+
+# How loud the chime is (0-100).
+sound_volume=80
+
+# on = saying the phrase below into the mic saves a clip, like Medal's "clip that".
+voice_clip=on
+
+# What to say. Two or three clear words work best.
+voice_phrase=clip that
+
+# windows = the recogniser built into Windows (offline). riovoice = a RioVoice speech-to-text server (more accurate).
+voice_engine=windows
+
+# The RioVoice streaming address (only used with voice_engine=riovoice).
+voice_url=wss://thoughts.riomax.com/ws/transcribe
 
 # Where clips go. Leave empty for your own Videos\Rewind folder.
 clips=

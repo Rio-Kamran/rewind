@@ -7,6 +7,10 @@ if (-not (Test-Path $csc)) { throw "C# compiler not found at $csc" }
 
 $refs = @('/r:System.dll', '/r:System.Core.dll', '/r:System.Drawing.dll', '/r:System.Windows.Forms.dll', '/r:Microsoft.VisualBasic.dll',
           '/r:System.IO.Compression.dll', '/r:System.IO.Compression.FileSystem.dll')
+# System.Speech (the "clip that" voice trigger) lives in the GAC, not next to csc, so it needs its full path.
+$speech = Get-ChildItem (Join-Path $env:WINDIR 'Microsoft.NET\assembly\GAC_MSIL\System.Speech') -Recurse -Filter 'System.Speech.dll' -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $speech) { throw "System.Speech.dll not found in the GAC (it ships with .NET Framework 4.x)" }
+$refs += "/r:$($speech.FullName)"
 $src = Get-ChildItem (Join-Path $root 'src\*.cs') | ForEach-Object { $_.FullName }
 
 # Tray icon file for the exe itself (Explorer, Start menu); the tray icon is drawn at runtime.
@@ -31,7 +35,7 @@ Write-Host "Building Rewind.exe"
 if ($LASTEXITCODE -ne 0) { throw "Rewind.exe build failed" }
 
 Write-Host "Building rewind-tests.exe"
-$testSrc = $src | Where-Object { $_ -notmatch '\\(Program|TrayApp|HotkeyWindow|ClipsForm|ClipGrid|SettingsTab|TrimForm)\.cs$' }
+$testSrc = $src | Where-Object { $_ -notmatch '\\(Program|TrayApp|HotkeyWindow|ClipsForm|ClipGrid|SettingsTab|TrimForm|Toast)\.cs$' }
 & $csc /nologo /target:exe /optimize+ /warn:4 "/out:$root\rewind-tests.exe" $refs $testSrc (Join-Path $root 'tests\Tests.cs')
 if ($LASTEXITCODE -ne 0) { throw "tests build failed" }
 

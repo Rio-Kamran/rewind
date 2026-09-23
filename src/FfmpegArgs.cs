@@ -168,6 +168,95 @@ namespace Rewind
             return sb.ToString();
         }
 
+        /// <summary>
+        /// A long recording's .ts file wrapped in an MP4, no re-encode. No faststart: that would
+        /// rewrite a file that can be gigabytes, and it only helps streaming over the web.
+        /// </summary>
+        public static string RemuxFile(string tsPath, string mp4Path, IList<string> audioLabels, string codec)
+        {
+            if (string.IsNullOrEmpty(tsPath)) throw new ArgumentException("tsPath");
+            if (string.IsNullOrEmpty(mp4Path)) throw new ArgumentException("mp4Path");
+            if (audioLabels == null) throw new ArgumentNullException("audioLabels");
+
+            var sb = new StringBuilder();
+            sb.Append("-hide_banner -loglevel error -nostdin -y -f mpegts -i ").Append(Quote(tsPath)).Append(' ');
+            sb.Append("-map 0:v -map 0:a? -c copy ");
+            if (codec == "hevc") sb.Append("-tag:v hvc1 ");
+            for (var i = 0; i < audioLabels.Count; i++)
+                sb.Append("-metadata:s:a:").Append(i).Append(" handler_name=").Append(Quote(audioLabels[i])).Append(' ');
+            sb.Append(Quote(mp4Path));
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Decodes the slice on stdin and writes every frame as a BMP to stdout, one after the
+        /// other; the caller keeps the last. passthrough: no frames duplicated to fill a clock.
+        /// </summary>
+        public static string Screenshot()
+        {
+            return "-hide_banner -loglevel error -nostdin -f mpegts -i pipe:0 -map 0:v -an -fps_mode passthrough -f image2pipe -c:v bmp pipe:1";
+        }
+
+        /// <summary>
+        /// A clip shrunk to fit Discord: h264 (the one codec Discord's player always shows), CBR at
+        /// the planned bitrate, the audio tracks mixed into one so it plays with both game and voice.
+        /// </summary>
+        public static string Share(string inputPath, string outputPath, SharePlan plan, int audioTracks)
+        {
+            if (string.IsNullOrEmpty(inputPath)) throw new ArgumentException("inputPath");
+            if (string.IsNullOrEmpty(outputPath)) throw new ArgumentException("outputPath");
+            if (plan == null) throw new ArgumentNullException("plan");
+            if (!plan.NeedsEncode) throw new ArgumentException("plan says the clip fits as it is");
+            if (audioTracks < 0) throw new ArgumentOutOfRangeException("audioTracks");
+
+            var sb = new StringBuilder();
+            sb.Append("-hide_banner -loglevel error -nostdin -y -i ").Append(Quote(inputPath)).Append(' ');
+            sb.Append("-map 0:v ");
+            if (audioTracks == 0) sb.Append("-an ");
+            else if (audioTracks == 1) sb.Append("-map 0:a:0 ");
+            else
+            {
+                var graph = new StringBuilder();
+                for (var i = 0; i < audioTracks; i++) graph.Append("[0:a:").Append(i).Append(']');
+                graph.Append("amix=inputs=").Append(audioTracks).Append(":duration=first:normalize=0[a]");
+                sb.Append("-filter_complex ").Append(Quote(graph.ToString())).Append(" -map \"[a]\" ");
+            }
+            var filters = new List<string>();
+            if (plan.Height > 0) filters.Add("scale=-2:" + plan.Height.ToString(CultureInfo.InvariantCulture));
+            if (plan.Fps > 0) filters.Add("fps=" + plan.Fps.ToString(CultureInfo.InvariantCulture));
+            if (filters.Count > 0) sb.Append("-vf ").Append(Quote(string.Join(",", filters.ToArray()))).Append(' ');
+            sb.Append(string.Format(CultureInfo.InvariantCulture,
+                "-c:v h264_nvenc -preset p5 -tune hq -profile:v high -rc cbr -b:v {0}k -maxrate {0}k -bufsize {1}k -pix_fmt yuv420p ",
+                plan.VideoKbps, plan.VideoKbps * 2));
+            if (audioTracks > 0)
+                sb.Append(string.Format(CultureInfo.InvariantCulture, "-c:a aac -b:a {0}k -ac 2 ", plan.AudioKbps));
+            sb.Append("-movflags +faststart ").Append(Quote(outputPath));
+            return sb.ToString();
+        }
+
+        public const int GifWidth = 480;
+        public const int GifFps = 15;
+
+        /// <summary>
+        /// One stretch of a clip as a looping GIF: a palette is built from the frames first (the
+        /// split/palettegen/paletteuse trick does both passes in one run) so it doesn't look like 1998.
+        /// </summary>
+        public static string Gif(string inputPath, string outputPath, double startSeconds, double lengthSeconds)
+        {
+            if (string.IsNullOrEmpty(inputPath)) throw new ArgumentException("inputPath");
+            if (string.IsNullOrEmpty(outputPath)) throw new ArgumentException("outputPath");
+            if (startSeconds < 0) throw new ArgumentOutOfRangeException("startSeconds");
+            if (lengthSeconds <= 0) throw new ArgumentOutOfRangeException("lengthSeconds");
+
+            var graph = string.Format(CultureInfo.InvariantCulture,
+                "fps={0},scale={1}:-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle",
+                GifFps, GifWidth);
+            return string.Format(CultureInfo.InvariantCulture,
+                "-hide_banner -loglevel error -nostdin -y -ss {0} -t {1} -i {2} -an -filter_complex {3} -loop 0 {4}",
+                startSeconds.ToString("0.###", CultureInfo.InvariantCulture), lengthSeconds.ToString("0.###", CultureInfo.InvariantCulture),
+                Quote(inputPath), Quote(graph), Quote(outputPath));
+        }
+
         /// <summary>Wraps an argument in double quotes, escaping any it contains.</summary>
         public static string Quote(string value)
         {

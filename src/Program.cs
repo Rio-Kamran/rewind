@@ -14,6 +14,8 @@ namespace Rewind
     ///   Rewind.exe --clips       open the clips window of the running Rewind
     ///   Rewind.exe --save        tell the running Rewind to save a clip (Stream Deck, scripts)
     ///   Rewind.exe --save-short  the same, but only the last short_seconds
+    ///   Rewind.exe --record      start a long recording, or stop the one running
+    ///   Rewind.exe --screenshot  save the screen as a PNG (and copy it)
     ///   Rewind.exe --quit        stop the running Rewind
     ///   Rewind.exe --list        show the monitors and audio devices it can see
     /// </summary>
@@ -22,8 +24,20 @@ namespace Rewind
         private const string InstanceMutexName = "Local\\Rewind.SingleInstance";
         public const string SaveEventName = "Local\\Rewind.SaveClip";
         public const string SaveShortEventName = "Local\\Rewind.SaveShortClip";
+        public const string RecordEventName = "Local\\Rewind.Record";
+        public const string ScreenshotEventName = "Local\\Rewind.Screenshot";
         public const string QuitEventName = "Local\\Rewind.Quit";
         public const string ShowEventName = "Local\\Rewind.Show";
+
+        private const string Usage =
+            "Rewind.exe               start in the tray (or open the window if it's running)\n" +
+            "Rewind.exe --clips       open the clips window\n" +
+            "Rewind.exe --save        save a clip from the running Rewind\n" +
+            "Rewind.exe --save-short  save a short clip\n" +
+            "Rewind.exe --record      start a long recording, or stop the one running\n" +
+            "Rewind.exe --screenshot  save a screenshot (and copy it)\n" +
+            "Rewind.exe --quit        stop the running Rewind\n" +
+            "Rewind.exe --list        list monitors and audio devices";
 
         [STAThread]
         private static int Main(string[] args)
@@ -34,15 +48,17 @@ namespace Rewind
             Application.SetCompatibleTextRenderingDefault(false);
 
             var mode = args.Length > 0 ? args[0].Trim().ToLowerInvariant() : "";
-            if (mode == "--save") return Signal(SaveEventName, "Rewind isn't running, so there's nothing to save.");
-            if (mode == "--save-short") return Signal(SaveShortEventName, "Rewind isn't running, so there's nothing to save.");
+            const string notRunning = "Rewind isn't running, so there's nothing to save.";
+            if (mode == "--save") return Signal(SaveEventName, notRunning);
+            if (mode == "--save-short") return Signal(SaveShortEventName, notRunning);
+            if (mode == "--record") return Signal(RecordEventName, "Rewind isn't running, so there's nothing to record with.");
+            if (mode == "--screenshot") return Signal(ScreenshotEventName, notRunning);
             if (mode == "--quit") return Signal(QuitEventName, null);
             if (mode == "--clips") return Signal(ShowEventName, "Rewind isn't running. Start it first, then open the window.");
             if (mode == "--list") return ShowDevices();
             if (mode.Length > 0)
             {
-                MessageBox.Show("Rewind.exe               start in the tray (or open the window if it's running)\nRewind.exe --clips       open the clips window\nRewind.exe --save        save a clip from the running Rewind\nRewind.exe --save-short  save a short clip\nRewind.exe --quit        stop the running Rewind\nRewind.exe --list        list monitors and audio devices",
-                    "Rewind");
+                MessageBox.Show(Usage, "Rewind");
                 return 0;
             }
 

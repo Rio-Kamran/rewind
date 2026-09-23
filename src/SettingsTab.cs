@@ -10,7 +10,8 @@ namespace Rewind
     /// <summary>
     /// The Settings tab: one row per config.txt setting, Apply writes the file back (with its
     /// comments) and restarts capture. Validation is Config.Parse, so the window and the text
-    /// file can never disagree about what's allowed.
+    /// file can never disagree about what's allowed. "Start with Windows" isn't a config setting:
+    /// it makes or removes the Startup shortcut on the spot.
     /// </summary>
     internal sealed class SettingsTab : UserControl
     {
@@ -19,6 +20,8 @@ namespace Rewind
         private readonly Dictionary<string, Control> _inputs = new Dictionary<string, Control>();
         private readonly Label _message = new Label();
         private readonly Button _apply = new Button();
+        private readonly CheckBox _startup = new CheckBox();
+        private bool _loadingStartup;
 
         public SettingsTab(IRewindControl control)
         {
@@ -30,26 +33,53 @@ namespace Rewind
             _grid.AutoSize = true;
             _grid.AutoSizeMode = AutoSizeMode.GrowAndShrink;
             _grid.Padding = new Padding(12, 12, 12, 12);
-            _grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
+            _grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 170));
             _grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 320));
             _grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
+            Heading("Keys");
             AddText("hotkey", "Save clip hotkey", "e.g. ctrl+alt+p, F9, shift+F10");
             AddText("hotkey_short", "Short clip hotkey", "off = no second key");
+            AddText("hotkey_record", "Record hotkey", "starts a long recording; again to stop. off = none");
+            AddText("hotkey_screenshot", "Screenshot hotkey", "saves a PNG and copies it. off = none");
+            AddCheck("voice_clip", "Voice clipping", "say the phrase into the mic to save a clip");
+            AddText("voice_phrase", "Voice phrase", "two or three clear words, e.g. clip that");
+            AddChoice("voice_engine", "Voice engine", new[] { Config.VoiceWindows, Config.VoiceRioVoice }, "windows = built in, offline; riovoice = the homelab's speech-to-text");
+            AddText("voice_url", "RioVoice address", "wss://… (riovoice engine only)");
+
+            Heading("Clips");
             AddNumber("seconds", "Clip length (s)", Config.MinSeconds, Config.MaxSeconds, "how far back a clip reaches");
             AddNumber("short_seconds", "Short clip length (s)", Config.MinShortSeconds, Config.MaxSeconds - 1, "must be less than the clip length");
+            AddNumber("recording_max_minutes", "Recording limit (min)", Config.MinRecordingMinutes, Config.MaxRecordingMinutes, "a long recording stops itself here");
+            AddNumber("share_max_mb", "Discord limit (MB)", Config.MinShareMb, Config.MaxShareMb, "Copy for Discord shrinks clips under this; free Discord = 20");
+            AddNumber("max_storage_gb", "Storage cap (GB)", 0, Config.MaxStorageGbLimit, "oldest clips are deleted past this; 0 = never");
+            AddFolder("clips", "Clips folder");
+
+            Heading("Video");
             AddNumber("fps", "Frames per second", Config.MinFps, Config.MaxFps, "60 matches most games");
             AddNumber("bitrate_mbps", "Quality (Mbps)", Config.MinBitrate, Config.MaxBitrate, "20 = ~150 MB per minute at 1440p");
             AddChoice("codec", "Video codec", new[] { "h264", "hevc", "av1" }, "h264 plays everywhere; av1 = half the size");
             AddChoice("monitor", "Monitor", MonitorChoices(), "primary = the main monitor");
+            AddChoice("record", "Record", new[] { Config.RecordAlways, Config.RecordGames }, "games = only while a game is in front");
+            AddText("games", "Games list", "process names, comma separated; fullscreen apps count anyway");
+            AddNumber("game_grace_seconds", "Game grace (s)", Config.MinGraceSeconds, Config.MaxGraceSeconds, "how long a game can be out of front before pausing");
+
+            Heading("Audio");
             AddCheck("game_audio", "Record game audio", "what the headset hears (track 1)");
             AddCheck("mic", "Record the mic", "your voice (track 2)");
             AddText("mic_filter", "Mic cleanup filter", "an ffmpeg audio filter; off = raw mic");
             AddNumber("audio_offset_ms", "Audio offset (ms)", -Config.MaxAudioOffsetMs, Config.MaxAudioOffsetMs, "+ = sound later than picture");
-            AddChoice("record", "Record", new[] { Config.RecordAlways, Config.RecordGames }, "games = only while a game is in front");
-            AddText("games", "Games list", "process names, comma separated; fullscreen apps count anyway");
-            AddNumber("game_grace_seconds", "Game grace (s)", Config.MinGraceSeconds, Config.MaxGraceSeconds, "how long a game can be out of front before pausing");
-            AddFolder("clips", "Clips folder");
+
+            Heading("When something lands");
+            AddCheck("sound", "Play a chime", "clip / screenshot / recording; your own clip.wav next to Rewind.exe replaces it");
+            AddNumberWithButton("sound_volume", "Chime volume", 0, 100, "Test sound", (s, e) => _control.PlayTestSound());
+            AddCheck("toast", "On-screen card", "a small \"Clip saved\" card in the corner, visible over most games");
+
+            Heading("Windows");
+            _startup.Text = "start Rewind when Windows starts (a shortcut in the Startup folder)";
+            _startup.AutoSize = true;
+            _startup.CheckedChanged += (s, e) => { if (!_loadingStartup) SetStartup(_startup.Checked); };
+            AddPlainRow("Start with Windows", _startup, "");
             AddText("ffmpeg", "ffmpeg.exe", "empty = the one on PATH");
 
             var buttons = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 12, 0, 0) };
@@ -96,6 +126,9 @@ namespace Rewind
                 else if (choice != null) SelectChoice(choice, pair.Value);
                 else input.Text = pair.Value;
             }
+            _loadingStartup = true;
+            _startup.Checked = Startup.Enabled;
+            _loadingStartup = false;
             _message.Text = "";
         }
 
@@ -136,6 +169,24 @@ namespace Rewind
             }
         }
 
+        private void SetStartup(bool on)
+        {
+            try
+            {
+                Startup.Set(on, Application.ExecutablePath);
+                _message.ForeColor = Color.ForestGreen;
+                _message.Text = on ? "Rewind will start with Windows." : "Rewind won't start with Windows any more.";
+            }
+            catch (InvalidOperationException error)
+            {
+                _message.ForeColor = Color.Firebrick;
+                _message.Text = error.Message;
+                _loadingStartup = true;
+                _startup.Checked = Startup.Enabled;
+                _loadingStartup = false;
+            }
+        }
+
         private void OpenConfigFile()
         {
             try { Process.Start("notepad.exe", FfmpegArgs.Quote(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.txt"))); }
@@ -144,7 +195,17 @@ namespace Rewind
 
         // ---- rows ----
 
-        private void AddRow(string key, string label, Control input, string hint)
+        private void Heading(string text)
+        {
+            var row = _grid.RowCount;
+            _grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            var label = new Label { Text = text, AutoSize = true, Font = new Font(Font, FontStyle.Bold), ForeColor = SystemColors.GrayText, Margin = new Padding(0, row == 0 ? 0 : 14, 0, 4) };
+            _grid.Controls.Add(label, 0, row);
+            _grid.SetColumnSpan(label, 3);
+            _grid.RowCount++;
+        }
+
+        private void AddPlainRow(string label, Control input, string hint)
         {
             var row = _grid.RowCount;
             _grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -156,6 +217,11 @@ namespace Rewind
             _grid.Controls.Add(input, 1, row);
             _grid.Controls.Add(help, 2, row);
             _grid.RowCount++;
+        }
+
+        private void AddRow(string key, string label, Control input, string hint)
+        {
+            AddPlainRow(label, input, hint);
             _inputs[key] = input;
         }
 
@@ -167,6 +233,19 @@ namespace Rewind
         private void AddNumber(string key, string label, int min, int max, string hint)
         {
             AddRow(key, label, new NumericUpDown { Minimum = min, Maximum = max, Width = 100, Anchor = AnchorStyles.Left }, hint);
+        }
+
+        /// <summary>A number box with a button beside it (the volume's Test sound).</summary>
+        private void AddNumberWithButton(string key, string label, int min, int max, string buttonText, EventHandler onClick)
+        {
+            var panel = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0), WrapContents = false };
+            var number = new NumericUpDown { Minimum = min, Maximum = max, Width = 100, Margin = new Padding(0, 3, 8, 3) };
+            var button = new Button { Text = buttonText, AutoSize = true, Margin = new Padding(0, 1, 0, 1) };
+            button.Click += onClick;
+            panel.Controls.Add(number);
+            panel.Controls.Add(button);
+            AddPlainRow(label, panel, "0-100; Test plays the clip chime at the saved settings");
+            _inputs[key] = number;
         }
 
         private void AddCheck(string key, string label, string hint)
@@ -195,7 +274,7 @@ namespace Rewind
             };
             panel.Controls.Add(box, 0, 0);
             panel.Controls.Add(browse, 1, 0);
-            AddRow(key, label, panel, "");
+            AddPlainRow(label, panel, "");
             _inputs[key] = box; // the text box is the value; the panel is only layout
         }
 

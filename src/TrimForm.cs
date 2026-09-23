@@ -29,7 +29,9 @@ namespace Rewind
         private readonly Label _lengthLabel = new Label();
         private readonly Label _message = new Label();
         private readonly Button _save = new Button();
+        private readonly Button _gif = new Button();
         private readonly Button _cancel = new Button();
+        private const double MaxGifSeconds = 20;
         private readonly System.Windows.Forms.Timer _previewTimer = new System.Windows.Forms.Timer { Interval = 150 };
         private ClipInfo _clip;
         private double _previewAt;
@@ -76,10 +78,14 @@ namespace Rewind
             _save.Font = new Font(Font, FontStyle.Bold);
             _save.AutoSize = true;
             _save.Click += (s, e) => Save();
+            _gif.Text = "Save as GIF";
+            _gif.AutoSize = true;
+            _gif.Click += (s, e) => SaveGif();
             _cancel.Text = "Cancel";
             _cancel.AutoSize = true;
             _cancel.Click += (s, e) => { if (!_saving) DialogResult = DialogResult.Cancel; };
             buttons.Controls.Add(_save);
+            buttons.Controls.Add(_gif);
             buttons.Controls.Add(_cancel);
 
             controls.Controls.Add(_startLabel, 0, 0);
@@ -220,35 +226,51 @@ namespace Rewind
             var lengthSeconds = (_end.Value - _start.Value) / (double)TicksPerSecond;
             if (lengthSeconds < MinLengthSeconds) { Fail("Pick at least half a second."); return; }
             var output = ClipLibrary.CopyName(_clip.Path, "trim", File.Exists);
-            var args = FfmpegArgs.Trim(_clip.Path, output, startSeconds, lengthSeconds, _control.Config);
+            Export("trim", output, FfmpegArgs.Trim(_clip.Path, output, startSeconds, lengthSeconds, _control.Config), false);
+        }
 
+        /// <summary>Medal's GIF export: the same stretch as a small looping GIF, copied so it pastes straight into Discord.</summary>
+        private void SaveGif()
+        {
+            if (_saving || !_clip.Duration.HasValue) return;
+            var startSeconds = _start.Value / (double)TicksPerSecond;
+            var lengthSeconds = (_end.Value - _start.Value) / (double)TicksPerSecond;
+            if (lengthSeconds < MinLengthSeconds) { Fail("Pick at least half a second."); return; }
+            if (lengthSeconds > MaxGifSeconds) { Fail("A GIF this long would be huge. Keep it under " + MaxGifSeconds + " s."); return; }
+            var output = ClipLibrary.CopyName(_clip.Path, "", "gif", File.Exists);
+            Export("GIF", output, FfmpegArgs.Gif(_clip.Path, output, startSeconds, lengthSeconds), true);
+        }
+
+        private void Export(string what, string output, string args, bool copy)
+        {
             _saving = true;
-            _save.Enabled = _cancel.Enabled = _start.Enabled = _end.Enabled = false;
+            _save.Enabled = _gif.Enabled = _cancel.Enabled = _start.Enabled = _end.Enabled = false;
             _message.ForeColor = SystemColors.GrayText;
             _message.Text = "Saving " + Path.GetFileName(output) + "…";
             var ffmpeg = _control.FfmpegPath;
             var worker = new Thread(() =>
             {
                 string error = null;
-                try { RunFfmpeg(ffmpeg, args, output); }
+                try { FfmpegRun.Execute(ffmpeg, args, output, SaveTimeoutMs); }
                 catch (Exception failure) { error = failure.Message; }
-                try { BeginInvoke(new Action(() => Saved(output, error))); }
+                try { BeginInvoke(new Action(() => Saved(what, output, error, copy))); }
                 catch (InvalidOperationException) { }
             }) { IsBackground = true, Name = "rewind-trim-save" };
             worker.Start();
         }
 
-        private void Saved(string output, string error)
+        private void Saved(string what, string output, string error, bool copy)
         {
             _saving = false;
-            _save.Enabled = _cancel.Enabled = _start.Enabled = _end.Enabled = true;
+            _save.Enabled = _gif.Enabled = _cancel.Enabled = _start.Enabled = _end.Enabled = true;
             if (error != null)
             {
-                Log.Error("trim failed: " + error);
-                Fail("Couldn't save the trim: " + error);
+                Log.Error(what + " failed: " + error);
+                Fail("Couldn't save the " + what + ": " + error);
                 return;
             }
-            Log.Info("trimmed " + _clip.FileName + " -> " + Path.GetFileName(output));
+            Log.Info(string.Format("{0}: {1} -> {2} ({3:0.0} MB)", what, _clip.FileName, Path.GetFileName(output), new FileInfo(output).Length / 1048576.0));
+            if (copy) ClipsForm.CopyFileToClipboard(output);
             SavedPath = output;
             DialogResult = DialogResult.OK;
         }
@@ -257,33 +279,6 @@ namespace Rewind
         {
             _message.ForeColor = Color.Firebrick;
             _message.Text = message;
-        }
-
-        private static void RunFfmpeg(string ffmpeg, string args, string output)
-        {
-            var info = new ProcessStartInfo(ffmpeg, args) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true };
-            var stderr = new StringBuilder();
-            using (var process = Process.Start(info))
-            {
-                if (process == null) throw new InvalidOperationException("ffmpeg didn't start.");
-                var drain = new Thread(() =>
-                {
-                    try { string line; while ((line = process.StandardError.ReadLine()) != null) lock (stderr) stderr.AppendLine(line); }
-                    catch (IOException) { }
-                    catch (ObjectDisposedException) { }
-                }) { IsBackground = true };
-                drain.Start();
-                if (!process.WaitForExit(SaveTimeoutMs))
-                {
-                    try { process.Kill(); } catch (InvalidOperationException) { }
-                    throw new InvalidOperationException("ffmpeg took too long.");
-                }
-                drain.Join(1000);
-                string text;
-                lock (stderr) text = stderr.ToString().Trim();
-                if (process.ExitCode != 0 || !File.Exists(output))
-                    throw new InvalidOperationException(text.Length > 0 ? text.Substring(text.LastIndexOf('\n') + 1).Trim() : "ffmpeg exit code " + process.ExitCode);
-            }
         }
     }
 }

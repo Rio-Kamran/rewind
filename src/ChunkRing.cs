@@ -29,6 +29,11 @@ namespace Rewind
         private long _bytes;
         private DateTime _newestUtc = DateTime.MinValue;
 
+        /// <summary>Every chunk as it lands, on the recorder's thread (a long recording writes it to disk).</summary>
+        public event Action<Chunk> Added;
+        /// <summary>The capture restarted: the next chunk begins a fresh stream with its own tables and timestamps.</summary>
+        public event Action Cleared;
+
         public ChunkRing(TimeSpan retain)
         {
             if (retain <= TimeSpan.Zero) throw new ArgumentOutOfRangeException("retain");
@@ -72,6 +77,8 @@ namespace Rewind
                     _bytes -= _chunks.Dequeue().Data.Length;
                 }
             }
+            var handler = Added;
+            if (handler != null) handler(chunk);
         }
 
         /// <summary>
@@ -114,6 +121,8 @@ namespace Rewind
                 _bytes = 0;
                 _newestUtc = DateTime.MinValue;
             }
+            var handler = Cleared;
+            if (handler != null) handler();
         }
     }
 }

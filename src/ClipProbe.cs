@@ -23,10 +23,27 @@ namespace Rewind
         }
     }
 
+    /// <summary>What ffmpeg says a media file is. Immutable.</summary>
+    internal sealed class MediaInfo
+    {
+        public readonly TimeSpan? Duration;
+        /// <summary>Video height in pixels; 0 if unknown.</summary>
+        public readonly int Height;
+        public readonly int AudioTracks;
+
+        public MediaInfo(TimeSpan? duration, int height, int audioTracks)
+        {
+            Duration = duration;
+            Height = height;
+            AudioTracks = audioTracks;
+        }
+    }
+
     /// <summary>
     /// Asks ffmpeg about clips: one run per clip gives a thumbnail and (from the same run's log)
-    /// the duration; FrameAt() fetches a single frame in memory for the trim preview. The command
-    /// lines and parsers are pure and tested.
+    /// the duration; FrameAt() fetches a single frame in memory for the trim preview; Inspect()
+    /// reads length, size and track count for the share export. The command lines and parsers
+    /// are pure and tested.
     /// </summary>
     internal static class ClipProbe
     {
@@ -34,6 +51,42 @@ namespace Rewind
         public const int PreviewWidth = 640;
         private const int TimeoutMs = 20000;
         private static readonly Regex DurationPattern = new Regex(@"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", RegexOptions.CultureInvariant);
+        private static readonly Regex VideoSizePattern = new Regex(@"Video:.*?\b(\d{2,5})x(\d{2,5})\b", RegexOptions.CultureInvariant);
+        private static readonly Regex AudioPattern = new Regex(@"Stream #\d+:\d+.*?: Audio:", RegexOptions.CultureInvariant);
+
+        /// <summary>The height from the first "Video: ... 2560x1440" line, or 0.</summary>
+        public static int ParseHeight(string ffmpegOutput)
+        {
+            if (string.IsNullOrEmpty(ffmpegOutput)) return 0;
+            var match = VideoSizePattern.Match(ffmpegOutput);
+            return match.Success ? int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture) : 0;
+        }
+
+        /// <summary>How many "Stream #0:N: Audio:" lines there are.</summary>
+        public static int ParseAudioTracks(string ffmpegOutput)
+        {
+            return string.IsNullOrEmpty(ffmpegOutput) ? 0 : AudioPattern.Matches(ffmpegOutput).Count;
+        }
+
+        /// <summary>ffmpeg -i on its own: it refuses to run, but prints everything about the file first.</summary>
+        public static string InspectArgs(string clipPath)
+        {
+            if (string.IsNullOrEmpty(clipPath)) throw new ArgumentException("clipPath");
+            return "-hide_banner -nostdin -i " + FfmpegArgs.Quote(clipPath);
+        }
+
+        /// <summary>Duration, height and audio-track count of a file. Throws InvalidOperationException when ffmpeg can't read it.</summary>
+        public static MediaInfo Inspect(string ffmpegPath, string clipPath)
+        {
+            if (string.IsNullOrEmpty(ffmpegPath)) throw new ArgumentException("ffmpegPath");
+            string output;
+            Run(ffmpegPath, InspectArgs(clipPath), null, out output); // exit code 1 is normal: no output file was asked for
+            var duration = ParseDuration(output);
+            var height = ParseHeight(output);
+            if (!duration.HasValue && height == 0)
+                throw new InvalidOperationException("ffmpeg couldn't read the file: " + Tail(output));
+            return new MediaInfo(duration, height, ParseAudioTracks(output));
+        }
 
         /// <summary>The "Duration: 00:01:00.46" line ffmpeg prints for an input, as a TimeSpan; null if absent.</summary>
         public static TimeSpan? ParseDuration(string ffmpegOutput)
@@ -65,11 +118,17 @@ namespace Rewind
         /// <summary>One frame half a second in, scaled to the thumbnail width. Default log level so the Duration line shows.</summary>
         public static string ThumbArgs(string clipPath, string thumbPath)
         {
+            return ThumbArgs(clipPath, thumbPath, false);
+        }
+
+        /// <summary>The same for a still image (a screenshot): no seeking into it, there is only the one frame.</summary>
+        public static string ThumbArgs(string clipPath, string thumbPath, bool stillImage)
+        {
             if (string.IsNullOrEmpty(clipPath)) throw new ArgumentException("clipPath");
             if (string.IsNullOrEmpty(thumbPath)) throw new ArgumentException("thumbPath");
             return string.Format(CultureInfo.InvariantCulture,
-                "-hide_banner -nostdin -y -ss 0.5 -i {0} -frames:v 1 -vf scale={1}:-2 -q:v 4 {2}",
-                FfmpegArgs.Quote(clipPath), ThumbWidth, FfmpegArgs.Quote(thumbPath));
+                "-hide_banner -nostdin -y {3}-i {0} -frames:v 1 -vf scale={1}:-2 -q:v 4 {2}",
+                FfmpegArgs.Quote(clipPath), ThumbWidth, FfmpegArgs.Quote(thumbPath), stillImage ? "" : "-ss 0.5 ");
         }
 
         /// <summary>One frame at a time, as a JPEG on stdout.</summary>
@@ -93,8 +152,8 @@ namespace Rewind
                 Directory.CreateDirectory(thumbFolder);
                 var thumb = Path.Combine(thumbFolder, ThumbKey(clip.Path, clip.Bytes, File.GetLastWriteTimeUtc(clip.Path)) + ".jpg");
                 string output;
-                var code = Run(ffmpegPath, ThumbArgs(clip.Path, thumb), null, out output);
-                var duration = ParseDuration(output);
+                var code = Run(ffmpegPath, ThumbArgs(clip.Path, thumb, clip.IsImage), null, out output);
+                var duration = clip.IsImage ? null : ParseDuration(output);
                 if (code != 0 || !File.Exists(thumb))
                 {
                     Log.Warn("no thumbnail for " + clip.FileName + ": " + Tail(output));

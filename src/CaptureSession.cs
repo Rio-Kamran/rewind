@@ -49,8 +49,12 @@ namespace Rewind
         public readonly double BufferedSeconds;
         public readonly double BufferedMb;
         public readonly IList<string> MissingAudio;
+        /// <summary>How long the long recording has run; null when there is none.</summary>
+        public readonly TimeSpan? Recording;
+        public readonly double RecordingMb;
 
-        public SessionStatus(string text, bool paused, string pauseReason, double bufferedSeconds, double bufferedMb, IList<string> missingAudio)
+        public SessionStatus(string text, bool paused, string pauseReason, double bufferedSeconds, double bufferedMb, IList<string> missingAudio,
+            TimeSpan? recording, double recordingMb)
         {
             Text = text;
             Paused = paused;
@@ -58,6 +62,8 @@ namespace Rewind
             BufferedSeconds = bufferedSeconds;
             BufferedMb = bufferedMb;
             MissingAudio = missingAudio;
+            Recording = recording;
+            RecordingMb = recordingMb;
         }
     }
 
@@ -65,7 +71,8 @@ namespace Rewind
     /// The capture pipeline as one thing: the ring, the audio taps, the recorder that keeps ffmpeg
     /// alive, and the three reasons recording can be paused (the user, the lock screen, no game in
     /// front). Rebuild() swaps in a new config; ProbeMissing() checks whether an audio device that
-    /// wasn't there at start has turned up.
+    /// wasn't there at start has turned up. Clips, screenshots and long recordings all read the
+    /// same ring.
     /// </summary>
     internal sealed class CaptureSession : IDisposable
     {
@@ -79,10 +86,12 @@ namespace Rewind
         private IList<AudioTap> _taps = NoTaps;
         private IList<TapSpec> _missing = NoSpecs;
         private Recorder _recorder;
+        private SessionRecording _recording;
         private bool _userPaused;
         private bool _lockPaused;
         private bool _gamePaused;
         private int _saving;
+        private int _shooting;
 
         /// <summary>An audio device that couldn't be opened: the spec and a plain-English reason.</summary>
         public event Action<TapSpec, string> AudioMissing;
@@ -103,6 +112,19 @@ namespace Rewind
         public bool LockPaused { get { return _lockPaused; } }
         public bool GamePaused { get { return _gamePaused; } }
         public bool Saving { get { return _saving != 0; } }
+        public bool Recording { get { return _recording != null; } }
+        public SessionRecording CurrentRecording { get { return _recording; } }
+
+        /// <summary>The audio track names in the order they are in the stream.</summary>
+        public IList<string> AudioLabels
+        {
+            get
+            {
+                var labels = new List<string>();
+                foreach (var tap in _taps) labels.Add(tap.Label);
+                return labels.AsReadOnly();
+            }
+        }
 
         public void Start()
         {
@@ -110,7 +132,7 @@ namespace Rewind
             Open();
         }
 
-        /// <summary>Tears the pipeline down and brings it back up with a new config. The buffer starts empty.</summary>
+        /// <summary>Tears the pipeline down and brings it back up with a new config. The buffer starts empty; a running recording is finished first.</summary>
         public void Rebuild(Config config)
         {
             if (config == null) throw new ArgumentNullException("config");
@@ -129,6 +151,7 @@ namespace Rewind
             {
                 var recorder = _recorder;
                 var ring = _ring;
+                var recording = _recording;
                 var reason = PauseReason;
                 var missing = new List<string>();
                 foreach (var spec in _missing) missing.Add(spec.Label);
@@ -136,7 +159,8 @@ namespace Rewind
                     ? char.ToUpperInvariant(reason[0]) + reason.Substring(1)
                     : recorder != null ? recorder.Status : "Stopped";
                 return new SessionStatus(text, reason.Length > 0, reason,
-                    ring != null ? ring.Span.TotalSeconds : 0, ring != null ? ring.Bytes / 1048576.0 : 0, missing.AsReadOnly());
+                    ring != null ? ring.Span.TotalSeconds : 0, ring != null ? ring.Bytes / 1048576.0 : 0, missing.AsReadOnly(),
+                    recording != null ? recording.Elapsed : (TimeSpan?)null, recording != null ? recording.Bytes / 1048576.0 : 0);
             }
         }
 
@@ -164,8 +188,7 @@ namespace Rewind
             if (recorder == null || recorder.Paused) return SaveStart.Paused;
             if (Interlocked.CompareExchange(ref _saving, 1, 0) != 0) return SaveStart.Busy;
 
-            var labels = new List<string>();
-            foreach (var tap in _taps) labels.Add(tap.Label);
+            var labels = AudioLabels;
             var config = _config;
             var ring = _ring;
             var ffmpeg = _ffmpeg;
@@ -193,6 +216,62 @@ namespace Rewind
             }) { IsBackground = true, Name = "rewind-save" };
             worker.Start();
             return SaveStart.Started;
+        }
+
+        /// <summary>Saves the newest frame as a PNG on a background thread; the callbacks run there with the path.</summary>
+        public SaveStart ScreenshotAsync(string reason, Action<string> onSaved, Action<Exception> onFailed)
+        {
+            if (onSaved == null) throw new ArgumentNullException("onSaved");
+            if (onFailed == null) throw new ArgumentNullException("onFailed");
+            var recorder = _recorder;
+            if (recorder == null || recorder.Paused) return SaveStart.Paused;
+            if (Interlocked.CompareExchange(ref _shooting, 1, 0) != 0) return SaveStart.Busy;
+
+            var config = _config;
+            var ring = _ring;
+            var ffmpeg = _ffmpeg;
+            var worker = new Thread(() =>
+            {
+                try
+                {
+                    var path = Screenshot.Take(ring, config, ffmpeg);
+                    Log.Info(string.Format("screenshot saved ({0}): {1}", reason, path));
+                    onSaved(path);
+                }
+                catch (Exception error)
+                {
+                    Log.Error("screenshot failed: " + error);
+                    onFailed(error);
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _shooting, 0);
+                }
+            }) { IsBackground = true, Name = "rewind-screenshot" };
+            worker.Start();
+            return SaveStart.Started;
+        }
+
+        /// <summary>Begins a long recording from the ring's newest keyframe. Throws InvalidOperationException when paused or already recording.</summary>
+        public void StartRecording()
+        {
+            var recorder = _recorder;
+            if (recorder == null || recorder.Paused) throw new InvalidOperationException("Rewind is " + (PauseReason.Length > 0 ? PauseReason : "not running") + ", so there's nothing to record.");
+            if (_recording != null) throw new InvalidOperationException("Already recording.");
+            var recording = new SessionRecording(_ring, _config, _ffmpeg, AudioLabels);
+            recording.Start();
+            _recording = recording;
+        }
+
+        /// <summary>Ends the long recording; onFinished runs on a background thread once the MP4s exist. False when none was running.</summary>
+        public bool StopRecording(Action<RecordingResult> onFinished)
+        {
+            if (onFinished == null) throw new ArgumentNullException("onFinished");
+            var recording = _recording;
+            _recording = null;
+            if (recording == null) return false;
+            recording.Stop(onFinished);
+            return true;
         }
 
         /// <summary>
@@ -259,6 +338,8 @@ namespace Rewind
 
         private void Close()
         {
+            // A recording nobody stopped (a config change, a quit): finish it quietly so the file is playable.
+            StopRecording(result => { });
             var recorder = _recorder;
             _recorder = null;
             if (recorder != null) recorder.Dispose();
