@@ -105,13 +105,27 @@ namespace Rewind.Tests
             }));
             Run("update: only swaps when nothing is in flight", () =>
             {
-                True(UpdatePolicy.BusyReason(false, false, false, false, false) == null, "idle");
-                Contains(UpdatePolicy.BusyReason(true, false, false, false, false), "recording");
-                Contains(UpdatePolicy.BusyReason(false, true, false, false, false), "recording");
-                Contains(UpdatePolicy.BusyReason(false, false, true, false, false), "saving");
-                Contains(UpdatePolicy.BusyReason(false, false, false, true, false), "export");
-                Contains(UpdatePolicy.BusyReason(false, false, false, false, true), "game");
-                Contains(UpdatePolicy.BusyReason(true, false, true, true, true), "recording"); // the first reason wins
+                True(UpdatePolicy.BusyReason(false, false, false, false, false, false) == null, "idle");
+                Contains(UpdatePolicy.BusyReason(true, false, false, false, false, false), "recording");
+                Contains(UpdatePolicy.BusyReason(false, true, false, false, false, false), "recording");
+                Contains(UpdatePolicy.BusyReason(false, false, true, false, false, false), "saving");
+                Contains(UpdatePolicy.BusyReason(false, false, false, true, false, false), "export");
+                Contains(UpdatePolicy.BusyReason(false, false, false, false, true, false), "game");
+                Contains(UpdatePolicy.BusyReason(true, false, true, true, true, false), "recording"); // the first reason wins
+            });
+            Run("update: right after a start a game doesn't hold the update back, real work still does", () =>
+            {
+                True(UpdatePolicy.BusyReason(false, false, false, false, true, true) == null, "game in front, buffer barely started");
+                Contains(UpdatePolicy.BusyReason(true, false, false, false, true, true), "recording");
+                Contains(UpdatePolicy.BusyReason(false, false, true, false, false, true), "saving");
+                Contains(UpdatePolicy.BusyReason(false, false, false, true, false, true), "export");
+            });
+            Run("update: the check runs at start and every few minutes", () =>
+            {
+                True(UpdatePolicy.CheckEvery <= TimeSpan.FromMinutes(10), "often enough to feel instant");
+                True(UpdatePolicy.CheckEvery >= TimeSpan.FromMinutes(2), "not hammering GitHub");
+                True(UpdatePolicy.FirstCheck <= TimeSpan.FromSeconds(5), "right after start");
+                True(UpdatePolicy.FreshStart >= TimeSpan.FromMinutes(1), "a start counts as fresh long enough for the check + download");
             });
             Run("update: a version that failed to start is skipped, a newer one isn't", () =>
             {

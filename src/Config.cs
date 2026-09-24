@@ -353,7 +353,7 @@ namespace Rewind
             Line(sb, values, d, "voice_url", "The RioVoice streaming address (only used with voice_engine=riovoice).");
             Line(sb, values, d, "clips", "Where clips go. Leave empty for your own Videos\\Rewind folder.");
             Line(sb, values, d, "ffmpeg", "Leave empty to use the ffmpeg on PATH, or give a full path to ffmpeg.exe.");
-            Line(sb, values, d, "auto_update", "on = every 6 hours, fetch a newer Rewind from GitHub, check its SHA-256 and restart into it once nothing is recording. off = never.");
+            Line(sb, values, d, "auto_update", "on = at start and every 5 minutes, fetch a newer Rewind from GitHub, check its SHA-256 and restart into it once nothing is recording. off = never.");
             return sb.ToString().TrimEnd() + Environment.NewLine;
         }
 

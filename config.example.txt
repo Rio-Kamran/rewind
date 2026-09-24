@@ -88,5 +88,5 @@ clips=
 # Leave empty to use the ffmpeg on PATH, or give a full path to ffmpeg.exe.
 ffmpeg=
 
-# on = every 6 hours, fetch a newer Rewind from GitHub, check its SHA-256 and restart into it once nothing is recording. off = never.
+# on = at start and every 5 minutes, fetch a newer Rewind from GitHub, check its SHA-256 and restart into it once nothing is recording. off = never.
 auto_update=on

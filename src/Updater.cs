@@ -55,6 +55,7 @@ namespace Rewind
         private const int StartWaitMs = 30000;
         private const long MaxTextBytes = 1024 * 1024;
         private const long MaxExeBytes = 64L * 1024 * 1024;
+        private static string _lastCurrentTag;
 
         public static string OldPath(string exe) { return exe + ".old"; }
         public static string NewPath(string exe) { return exe + ".new"; }
@@ -87,7 +88,9 @@ namespace Rewind
             var release = UpdatePolicy.ParseRelease(GetText(url));
             if (!UpdatePolicy.IsNewer(release.Version, running))
             {
-                Log.Info("update check: " + UpdatePolicy.Tag(running) + " is current (latest release " + release.Tag + ")");
+                // Every 5 minutes: only say so when the answer changes, or the log fills with it.
+                if (Interlocked.Exchange(ref _lastCurrentTag, release.Tag) != release.Tag)
+                    Log.Info("update check: " + UpdatePolicy.Tag(running) + " is current (latest release " + release.Tag + ")");
                 return null;
             }
             if (UpdatePolicy.IsSkipped(release.Version, skippedText))

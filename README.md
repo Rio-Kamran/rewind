@@ -82,10 +82,12 @@ The first time, it downloads ffmpeg by itself (about 110 MB, once, into `%LOCALA
 and then starts recording — the tray dot turns red when it's ready and a balloon says so. `config.txt`
 appears next to the exe. To start with Windows: tick *Start with Windows* on the Settings tab.
 
-**It keeps itself up to date.** Every 6 hours Rewind asks GitHub for the latest release. When there is a
+**It keeps itself up to date.** Right after it starts, and then every 5 minutes, Rewind asks GitHub for the
+latest release (12 asks an hour, inside the 60 GitHub allows without a login). When there is a
 newer one it downloads `Rewind.exe` next to the running one, checks it against the release's
 `Rewind.exe.sha256` (and that it really is the promised version), and waits until nothing is going on — no
-long recording, no clip or export saving, no game in front for a minute. Then it renames itself to
+long recording, no clip or export saving, and no game in front for a minute (in the first 3 minutes after a
+start a game doesn't count: the replay buffer is still empty). Then it renames itself to
 `Rewind.exe.old`, puts the new one in its place and restarts into it; a card says *Updated to vX.Y.Z*. If
 the new one doesn't come up, the old one is put back and that version is never tried again
 (`update-skipped.txt`). Offline or rate-limited just means a line in the log. `auto_update=off` (or the

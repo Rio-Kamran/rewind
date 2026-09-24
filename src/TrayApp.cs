@@ -24,8 +24,6 @@ namespace Rewind
         private const int TickMs = 2000;
         private const int ProbeMs = 15000;
         private const int StopRecordingWaitMs = 120000;
-        private const int FirstUpdateCheckMs = 30000;
-        private const int UpdateCheckEveryMs = 6 * 60 * 60 * 1000;
         private const int GameRecentSeconds = 60;
 
         private readonly string _appDir;
@@ -62,6 +60,9 @@ namespace Rewind
         private UpdateHandOff _handOff;
         private string _updateWaitReason;
         private int _checkingUpdate;
+        private DateTime _startedUtc = DateTime.UtcNow;
+        private string _updateSkipLogged;
+        private bool _updateCheckFailing;
         private Action _balloonAction;
         private DateTime _lastGameSeenUtc = DateTime.MinValue;
         private string _lastInFront = "";
@@ -759,13 +760,14 @@ namespace Rewind
 
         // ---- auto-update ----
 
-        /// <summary>First check 30 s after start, then every 6 h. A dev build or auto_update=off just logs why at each check.</summary>
+        /// <summary>First check right after start, then every 5 min. A dev build or auto_update=off logs why (once per change).</summary>
         private void StartUpdates()
         {
             var skip = UpdatePolicy.SkipReason(_appDir, _config.AutoUpdate);
-            Log.Info("auto-update: running " + UpdatePolicy.Tag(UpdatePolicy.RunningVersion) + ", " + (skip ?? "checking GitHub every 6 h"));
+            Log.Info("auto-update: running " + UpdatePolicy.Tag(UpdatePolicy.RunningVersion) + ", " + (skip ?? "checking GitHub now and every " + UpdatePolicy.CheckEvery.TotalMinutes + " min"));
+            _updateSkipLogged = skip;
             if (UpdatePolicy.SkipReason(_appDir, true) == null) Updater.CleanUpSoon(ExePath); // the last update's .old, a stale .new
-            _updateTimer = new System.Windows.Forms.Timer { Interval = FirstUpdateCheckMs };
+            _updateTimer = new System.Windows.Forms.Timer { Interval = (int)UpdatePolicy.FirstCheck.TotalMilliseconds };
             _updateTimer.Tick += (s, e) => CheckForUpdate();
             _updateTimer.Start();
         }
@@ -774,14 +776,12 @@ namespace Rewind
         private void CheckForUpdate()
         {
             if (_disposed) return;
-            _updateTimer.Interval = UpdateCheckEveryMs;
+            _updateTimer.Interval = (int)UpdatePolicy.CheckEvery.TotalMilliseconds;
             if (_staged != null) return; // one is already downloaded and waiting
             var skip = UpdatePolicy.SkipReason(_appDir, _config.AutoUpdate);
-            if (skip != null)
-            {
-                Log.Info("auto-update: not checking, " + skip);
-                return;
-            }
+            if (skip != _updateSkipLogged) Log.Info("auto-update: " + (skip != null ? "not checking, " + skip : "checking again"));
+            _updateSkipLogged = skip;
+            if (skip != null) return;
             if (Interlocked.CompareExchange(ref _checkingUpdate, 1, 0) != 0) return;
             var exe = ExePath;
             var running = UpdatePolicy.RunningVersion;
@@ -792,10 +792,14 @@ namespace Rewind
                 try
                 {
                     staged = Updater.CheckAndDownload(exe, running, skipped);
+                    if (_updateCheckFailing) Log.Info("update check: reaching GitHub again");
+                    _updateCheckFailing = false;
                 }
                 catch (WebException error)
                 {
-                    Log.Info("update check failed (offline or rate-limited?): " + error.Message);
+                    // Offline for hours = one line, not one every 5 minutes.
+                    if (!_updateCheckFailing) Log.Info("update check failed (offline or rate-limited?): " + error.Message);
+                    _updateCheckFailing = true;
                 }
                 catch (Exception error)
                 {
@@ -824,7 +828,8 @@ namespace Rewind
                 return;
             }
             var gameRecently = DateTime.UtcNow - _lastGameSeenUtc < TimeSpan.FromSeconds(GameRecentSeconds);
-            var busy = UpdatePolicy.BusyReason(_session.Recording, _stoppingRecording, _session.Saving || _session.Shooting, Exports.Running, gameRecently);
+            var freshStart = DateTime.UtcNow - _startedUtc < UpdatePolicy.FreshStart;
+            var busy = UpdatePolicy.BusyReason(_session.Recording, _stoppingRecording, _session.Saving || _session.Shooting, Exports.Running, gameRecently, freshStart);
             if (busy != null)
             {
                 if (busy != _updateWaitReason) Log.Info("update " + tag + " waiting: " + busy);

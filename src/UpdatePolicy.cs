@@ -37,6 +37,13 @@ namespace Rewind
         public const string ExeAsset = "Rewind.exe";
         public const string HashAsset = "Rewind.exe.sha256";
 
+        /// <summary>The first check, right after start: a restart is when a friend expects the new version.</summary>
+        public static readonly TimeSpan FirstCheck = TimeSpan.FromSeconds(2);
+        /// <summary>Then this often: 12 asks an hour, well inside the 60 an hour GitHub gives an address without a login.</summary>
+        public static readonly TimeSpan CheckEvery = TimeSpan.FromMinutes(5);
+        /// <summary>This soon after a start the replay buffer holds next to nothing, so a game in front doesn't hold an update back.</summary>
+        public static readonly TimeSpan FreshStart = TimeSpan.FromMinutes(3);
+
         /// <summary>"v2.2.3", "2.2", "v2.3.0-beta.1", "2.2.3-4-g010834c" -> 2.2.3 / 2.2.0 / 2.3.0 / 2.2.3; null for anything else.</summary>
         public static Version ParseVersion(string text)
         {
@@ -175,14 +182,17 @@ namespace Rewind
             return null;
         }
 
-        /// <summary>Why a restart now would lose something, or null when it is safe to swap. The first reason wins.</summary>
-        public static string BusyReason(bool recording, bool finishingRecording, bool saving, bool exporting, bool gameInFront)
+        /// <summary>
+        /// Why a restart now would lose something, or null when it is safe to swap. The first reason wins.
+        /// Just after a start (freshStart) the buffer is nearly empty, so only real work in flight holds it back.
+        /// </summary>
+        public static string BusyReason(bool recording, bool finishingRecording, bool saving, bool exporting, bool gameInFront, bool freshStart)
         {
             if (recording) return "a long recording is running";
             if (finishingRecording) return "a recording is still being finished";
             if (saving) return "a clip or screenshot is saving";
             if (exporting) return "an export (Discord copy, trim or GIF) is running";
-            if (gameInFront) return "a game is in front (a restart would empty the replay buffer)";
+            if (gameInFront && !freshStart) return "a game is in front (a restart would empty the replay buffer)";
             return null;
         }
 
