@@ -36,7 +36,7 @@ namespace Rewind
             "hotkey", "hotkey_short", "hotkey_record", "hotkey_screenshot", "seconds", "short_seconds", "fps", "bitrate_mbps", "codec", "monitor",
             "game_audio", "mic", "mic_filter", "audio_offset_ms", "record", "games", "game_grace_seconds",
             "recording_max_minutes", "share_max_mb", "max_storage_gb", "toast", "sound", "sound_volume", "voice_clip", "voice_phrase",
-            "voice_engine", "voice_url", "clips", "ffmpeg"
+            "voice_engine", "voice_url", "clips", "ffmpeg", "auto_update"
         };
         public const string VoiceWindows = "windows", VoiceRioVoice = "riovoice";
 
@@ -94,11 +94,13 @@ namespace Rewind
         public readonly string ClipsFolder;
         /// <summary>Explicit ffmpeg.exe path; empty = find it on PATH.</summary>
         public readonly string FfmpegPath;
+        /// <summary>Check GitHub for a newer Rewind every few hours and swap it in when idle.</summary>
+        public readonly bool AutoUpdate;
 
         private Config(string hotkey, string hotkeyShort, string hotkeyRecord, string hotkeyScreenshot, int seconds, int shortSeconds, int fps, int bitrateMbps,
             string codec, string monitor, bool gameAudio, bool mic, string micFilter, int audioOffsetMs,
             string record, IList<string> games, int gameGraceSeconds, int recordingMaxMinutes, int shareMaxMb, int maxStorageGb, bool toast,
-            bool sound, int soundVolume, bool voiceClip, string voicePhrase, string voiceEngine, string voiceUrl, string clipsFolder, string ffmpegPath)
+            bool sound, int soundVolume, bool voiceClip, string voicePhrase, string voiceEngine, string voiceUrl, string clipsFolder, string ffmpegPath, bool autoUpdate)
         {
             Hotkey = hotkey;
             HotkeyShort = hotkeyShort;
@@ -129,6 +131,7 @@ namespace Rewind
             VoiceUrl = voiceUrl;
             ClipsFolder = clipsFolder;
             FfmpegPath = ffmpegPath;
+            AutoUpdate = autoUpdate;
         }
 
         public bool GamesOnly { get { return Record == RecordGames; } }
@@ -138,7 +141,7 @@ namespace Rewind
             var videos = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
             return new Config("ctrl+alt+p", "ctrl+alt+o", "ctrl+alt+r", "ctrl+alt+i", 60, 15, 60, 20, "h264", "primary", true, true,
                 "afftdn=nr=12:nf=-40", 0, RecordAlways, DefaultGames, 45, 120, 20, 0, true, true, 80, true, "clip that",
-                VoiceWindows, "wss://thoughts.riomax.com/ws/transcribe", Path.Combine(videos, "Rewind"), "");
+                VoiceWindows, "wss://thoughts.riomax.com/ws/transcribe", Path.Combine(videos, "Rewind"), "", true);
         }
 
         /// <summary>Reads the file, writing the default one first if it doesn't exist yet.</summary>
@@ -215,10 +218,11 @@ namespace Rewind
                 throw new ConfigException("clips folder has characters a path can't have: " + clips);
 
             var ffmpeg = Get(values, "ffmpeg", d.FfmpegPath);
+            var autoUpdate = GetBool(values, "auto_update", d.AutoUpdate);
 
             return new Config(hotkey, hotkeyShort, hotkeyRecord, hotkeyScreenshot, seconds, shortSeconds, fps, bitrate, codec, monitor,
                 gameAudio, mic, micFilter, audioOffset, record, games, grace, recordingMax, shareMax, storageGb, toast,
-                sound, soundVolume, voiceClip, voicePhrase, voiceEngine, voiceUrl, clips, ffmpeg);
+                sound, soundVolume, voiceClip, voicePhrase, voiceEngine, voiceUrl, clips, ffmpeg, autoUpdate);
         }
 
         /// <summary>A hotkey that may be "off" (returned as empty); anything else must parse.</summary>
@@ -296,6 +300,7 @@ namespace Rewind
             values["voice_url"] = VoiceUrl;
             values["clips"] = ClipsFolder;
             values["ffmpeg"] = FfmpegPath;
+            values["auto_update"] = AutoUpdate ? "on" : "off";
             return values;
         }
 
@@ -348,6 +353,7 @@ namespace Rewind
             Line(sb, values, d, "voice_url", "The RioVoice streaming address (only used with voice_engine=riovoice).");
             Line(sb, values, d, "clips", "Where clips go. Leave empty for your own Videos\\Rewind folder.");
             Line(sb, values, d, "ffmpeg", "Leave empty to use the ffmpeg on PATH, or give a full path to ffmpeg.exe.");
+            Line(sb, values, d, "auto_update", "on = every 6 hours, fetch a newer Rewind from GitHub, check its SHA-256 and restart into it once nothing is recording. off = never.");
             return sb.ToString().TrimEnd() + Environment.NewLine;
         }
 

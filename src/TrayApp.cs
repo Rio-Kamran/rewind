@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
+using System.Net;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -23,6 +24,9 @@ namespace Rewind
         private const int TickMs = 2000;
         private const int ProbeMs = 15000;
         private const int StopRecordingWaitMs = 120000;
+        private const int FirstUpdateCheckMs = 30000;
+        private const int UpdateCheckEveryMs = 6 * 60 * 60 * 1000;
+        private const int GameRecentSeconds = 60;
 
         private readonly string _appDir;
         private readonly string _configPath;
@@ -53,6 +57,11 @@ namespace Rewind
         private ClipsForm _window;
         private System.Windows.Forms.Timer _tickTimer;
         private System.Windows.Forms.Timer _probeTimer;
+        private System.Windows.Forms.Timer _updateTimer;
+        private StagedUpdate _staged;
+        private UpdateHandOff _handOff;
+        private string _updateWaitReason;
+        private int _checkingUpdate;
         private Action _balloonAction;
         private DateTime _lastGameSeenUtc = DateTime.MinValue;
         private string _lastInFront = "";
@@ -74,6 +83,9 @@ namespace Rewind
         public SessionStatus Status { get { return _session != null ? _session.Status : null; } }
         public bool UserPaused { get { return _session != null && _session.UserPaused; } }
         public bool Recording { get { return _session != null && _session.Recording; } }
+        /// <summary>Set when Rewind quit to restart into a new version: Program hands over to it once the tray is gone.</summary>
+        public UpdateHandOff HandOff { get { return _handOff; } }
+        private static string ExePath { get { return Application.ExecutablePath; } }
         public event Action<SavedClip> ClipSaved;
         public event Action FilesChanged;
 
@@ -100,6 +112,7 @@ namespace Rewind
             GC.KeepAlive(forceHandle);
 
             BuildTray();
+            StartUpdates();
 
             string ffmpeg;
             try
@@ -670,6 +683,7 @@ namespace Rewind
                 else ShowRecordingPill();
             }
             RefreshTooltip();
+            if (_staged != null) TryApplyUpdate();
         }
 
         /// <summary>In games mode: record while a game is in front, pause once it has been gone for the grace period.</summary>
@@ -741,6 +755,126 @@ namespace Rewind
         {
             Balloon("No " + spec.Label.ToLowerInvariant() + " audio",
                 message + " Clips will be saved without it; Rewind keeps checking for it.", ToolTipIcon.Warning);
+        }
+
+        // ---- auto-update ----
+
+        /// <summary>First check 30 s after start, then every 6 h. A dev build or auto_update=off just logs why at each check.</summary>
+        private void StartUpdates()
+        {
+            var skip = UpdatePolicy.SkipReason(_appDir, _config.AutoUpdate);
+            Log.Info("auto-update: running " + UpdatePolicy.Tag(UpdatePolicy.RunningVersion) + ", " + (skip ?? "checking GitHub every 6 h"));
+            if (UpdatePolicy.SkipReason(_appDir, true) == null) Updater.CleanUpSoon(ExePath); // the last update's .old, a stale .new
+            _updateTimer = new System.Windows.Forms.Timer { Interval = FirstUpdateCheckMs };
+            _updateTimer.Tick += (s, e) => CheckForUpdate();
+            _updateTimer.Start();
+        }
+
+        /// <summary>Asks GitHub on a worker thread; a verified download waits in _staged for an idle moment. Offline / rate-limited = one log line.</summary>
+        private void CheckForUpdate()
+        {
+            if (_disposed) return;
+            _updateTimer.Interval = UpdateCheckEveryMs;
+            if (_staged != null) return; // one is already downloaded and waiting
+            var skip = UpdatePolicy.SkipReason(_appDir, _config.AutoUpdate);
+            if (skip != null)
+            {
+                Log.Info("auto-update: not checking, " + skip);
+                return;
+            }
+            if (Interlocked.CompareExchange(ref _checkingUpdate, 1, 0) != 0) return;
+            var exe = ExePath;
+            var running = UpdatePolicy.RunningVersion;
+            var skipped = Updater.ReadSkipped(_appDir);
+            var worker = new Thread(() =>
+            {
+                StagedUpdate staged = null;
+                try
+                {
+                    staged = Updater.CheckAndDownload(exe, running, skipped);
+                }
+                catch (WebException error)
+                {
+                    Log.Info("update check failed (offline or rate-limited?): " + error.Message);
+                }
+                catch (Exception error)
+                {
+                    Log.Warn("update check failed: " + error.Message);
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _checkingUpdate, 0);
+                }
+                if (staged != null) OnUi(() => { if (!_disposed) _staged = staged; });
+            }) { IsBackground = true, Name = "rewind-update-check" };
+            worker.Start();
+        }
+
+        /// <summary>Every tick while an update waits: swap and restart the moment nothing would be lost.</summary>
+        private void TryApplyUpdate()
+        {
+            var staged = _staged;
+            if (staged == null || _session == null || _disposed) return;
+            var tag = UpdatePolicy.Tag(staged.Version);
+            if (UpdatePolicy.SkipReason(_appDir, _config.AutoUpdate) != null)
+            {
+                Log.Info("auto-update turned off: dropping the downloaded " + tag);
+                _staged = null;
+                Updater.DiscardDownload(ExePath);
+                return;
+            }
+            var gameRecently = DateTime.UtcNow - _lastGameSeenUtc < TimeSpan.FromSeconds(GameRecentSeconds);
+            var busy = UpdatePolicy.BusyReason(_session.Recording, _stoppingRecording, _session.Saving || _session.Shooting, Exports.Running, gameRecently);
+            if (busy != null)
+            {
+                if (busy != _updateWaitReason) Log.Info("update " + tag + " waiting: " + busy);
+                _updateWaitReason = busy;
+                return;
+            }
+
+            _staged = null;
+            try
+            {
+                Updater.Swap(ExePath, staged.Path);
+            }
+            catch (IOException error)
+            {
+                Log.Error("update " + tag + " not swapped in: " + error.Message);
+                Updater.DiscardDownload(ExePath);
+                return;
+            }
+            catch (UnauthorizedAccessException error)
+            {
+                Log.Error("update " + tag + " not swapped in: " + error.Message);
+                Updater.DiscardDownload(ExePath);
+                return;
+            }
+            Log.Info("update: " + tag + " swapped in, restarting into it");
+            _handOff = new UpdateHandOff(ExePath, UpdatePolicy.RunningVersion, staged.Version);
+            Dispose();
+            Application.Exit();
+        }
+
+        /// <summary>Started by the updater (--after-update / --update-failed): the card that says what happened.</summary>
+        public void AnnounceUpdate(bool updated, string otherVersion)
+        {
+            var running = UpdatePolicy.Tag(UpdatePolicy.RunningVersion);
+            var title = updated ? "Updated to " + running : "Update NOT installed";
+            var detail = updated ? "was " + otherVersion + "  ·  recording as usual" : otherVersion + " didn't start; still on " + running;
+            Log.Info("auto-update: " + title + " (" + detail + ")");
+            if (_config.Toast)
+            {
+                try
+                {
+                    Toast.Flash(title, detail, null);
+                    return;
+                }
+                catch (Exception error)
+                {
+                    Log.Warn("toast failed, falling back to a balloon: " + error.Message);
+                }
+            }
+            Balloon(title, detail, updated ? ToolTipIcon.Info : ToolTipIcon.Warning);
         }
 
         // ---- tray ----
@@ -982,6 +1116,7 @@ namespace Rewind
             SystemEvents.SessionSwitch -= OnSessionSwitch;
             if (_tickTimer != null) _tickTimer.Dispose();
             if (_probeTimer != null) _probeTimer.Dispose();
+            if (_updateTimer != null) _updateTimer.Dispose();
             if (_voice != null) _voice.Dispose();
             if (_hotkeyWindow != null) _hotkeyWindow.Dispose();
             Toast.CloseAll();

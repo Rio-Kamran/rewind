@@ -81,6 +81,7 @@ namespace Rewind
             _startup.CheckedChanged += (s, e) => { if (!_loadingStartup) SetStartup(_startup.Checked); };
             AddPlainRow("Start with Windows", _startup, "");
             AddText("ffmpeg", "ffmpeg.exe", "empty = the one on PATH");
+            AddCheck("auto_update", "Auto-update", "get new versions from GitHub, restart into them when idle (this is " + UpdatePolicy.Tag(UpdatePolicy.RunningVersion) + ")");
 
             var buttons = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 12, 0, 0) };
             _apply.Text = "Apply";

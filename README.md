@@ -82,6 +82,15 @@ The first time, it downloads ffmpeg by itself (about 110 MB, once, into `%LOCALA
 and then starts recording — the tray dot turns red when it's ready and a balloon says so. `config.txt`
 appears next to the exe. To start with Windows: tick *Start with Windows* on the Settings tab.
 
+**It keeps itself up to date.** Every 6 hours Rewind asks GitHub for the latest release. When there is a
+newer one it downloads `Rewind.exe` next to the running one, checks it against the release's
+`Rewind.exe.sha256` (and that it really is the promised version), and waits until nothing is going on — no
+long recording, no clip or export saving, no game in front for a minute. Then it renames itself to
+`Rewind.exe.old`, puts the new one in its place and restarts into it; a card says *Updated to vX.Y.Z*. If
+the new one doesn't come up, the old one is put back and that version is never tried again
+(`update-skipped.txt`). Offline or rate-limited just means a line in the log. `auto_update=off` (or the
+Settings tab) turns it off; a copy with a `.git` folder next to it (a build from source) never updates.
+
 ## Building it yourself
 Same requirements (Windows 10/11, NVIDIA card). AMD/Intel would need a different encoder, see below.
 
@@ -114,6 +123,9 @@ powershell -File build.ps1
 ```
 Uses the C# compiler that ships inside Windows (`csc.exe` in `Microsoft.NET\Framework64\v4.0.30319`),
 no Visual Studio needed. Builds `Rewind.exe`, then `rewind-tests.exe`, and runs the tests.
+The version is stamped from the git tag (`git describe --tags`; the pushed tag in CI) into
+`obj\Version.cs`; `build.ps1 -Version 2.2.0` forces one. Pushing a `v*` tag makes CI publish a release with
+`Rewind.exe` and `Rewind.exe.sha256`, which is what every running copy updates to.
 Needs `ffmpeg.exe` on PATH (a recent build with `ddagrab` and `h264_nvenc`; the yt-dlp winget one works).
 
 ## Files
@@ -135,6 +147,8 @@ Needs `ffmpeg.exe` on PATH (a recent build with `ddagrab` and `h264_nvenc`; the 
 | `src/Toast.cs` | the on-screen "Clip saved" card and the REC pill |
 | `src/VoiceClip.cs` / `RioVoice.cs` / `SpeechGate.cs` | the "clip that" listeners: Windows' speech recogniser, or a RioVoice server (mic gate + WebSocket); the resampler, loudness gate and phrase check are pure and tested |
 | `src/Startup.cs` | the Start-with-Windows shortcut |
+| `src/UpdatePolicy.cs` / `Updater.cs` / `Exports.cs` | the auto-updater: version compare, hash check, dev-build and idle decisions (pure, tested); the GitHub check, download, rename-swap, restart and roll back; the count of running exports |
+| `src/AssemblyInfo.cs` | the exe's name and description (the version comes from `build.ps1`) |
 | `src/FfmpegArgs.cs` / `FfmpegRun.cs` | builds the ffmpeg command lines: capture, remux, trim, share, GIF, screenshot (pure, tested); runs the file-to-file ones |
 | `src/Config.cs` | `config.txt` parsing, validation, and writing it back with comments |
 | `src/GameDetector.cs` / `ForegroundApp.cs` | what's in front and whether it counts as a game (pure, tested) |
@@ -144,4 +158,4 @@ Needs `ffmpeg.exe` on PATH (a recent build with `ddagrab` and `h264_nvenc`; the 
 | `src/Dxgi.cs` | finds which DXGI output is the primary monitor |
 | `src/CoreAudio.cs` | the WASAPI COM interfaces |
 | `src/RewindControl.cs` / `Shell.cs` / `KillOnCloseJob.cs` / `Log.cs` / `FfmpegLocator.cs` / `FfmpegFetcher.cs` | the window's seam to the tray app, explorer args, the ffmpeg kill-on-close job, the log, finding / fetching ffmpeg |
-| `tests/Tests.cs` | unit tests (no framework needed) |
+| `tests/Tests.cs` / `UpdateTests.cs` | unit tests (no framework needed) |

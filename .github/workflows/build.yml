@@ -1,5 +1,6 @@
 # Builds Rewind.exe with the compiler that ships in Windows, runs the tests, keeps the exe as an
-# artifact on every push, and attaches it to a GitHub Release whenever a v* tag is pushed.
+# artifact on every push, and attaches it to a GitHub Release whenever a v* tag is pushed, with a
+# Rewind.exe.sha256 beside it: the auto-updater refuses any download that doesn't match it.
 name: build
 
 on:
@@ -15,20 +16,33 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the tags, so build.ps1 can stamp the version with git describe
 
       - name: Build and test
         shell: pwsh
         run: powershell -ExecutionPolicy Bypass -File build.ps1
 
+      - name: Checksum
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash Rewind.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -Path Rewind.exe.sha256 -Value "$hash  Rewind.exe" -Encoding ascii -NoNewline
+          Get-Content Rewind.exe.sha256
+
       - name: Keep the exe
         uses: actions/upload-artifact@v4
         with:
           name: Rewind
-          path: Rewind.exe
+          path: |
+            Rewind.exe
+            Rewind.exe.sha256
 
       - name: Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: Rewind.exe
+          files: |
+            Rewind.exe
+            Rewind.exe.sha256
           generate_release_notes: true

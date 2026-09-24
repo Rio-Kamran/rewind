@@ -56,7 +56,9 @@ namespace Rewind
             if (mode == "--quit") return Signal(QuitEventName, null);
             if (mode == "--clips") return Signal(ShowEventName, "Rewind isn't running. Start it first, then open the window.");
             if (mode == "--list") return ShowDevices();
-            if (mode.Length > 0)
+            // Started by the auto-updater: the old copy is letting go of the single-instance lock.
+            var restarted = mode == Updater.AfterUpdateArg || mode == Updater.UpdateFailedArg;
+            if (mode.Length > 0 && !restarted)
             {
                 MessageBox.Show(Usage, "Rewind");
                 return 0;
@@ -65,7 +67,12 @@ namespace Rewind
             bool created;
             using (var mutex = new Mutex(true, InstanceMutexName, out created))
             {
-                if (!created)
+                if (!created && restarted && !WaitForOldCopy(mutex))
+                {
+                    Log.Error("started by the updater, but the old copy never let go; giving up");
+                    return 3;
+                }
+                if (!created && !restarted)
                 {
                     // Already running: a second start just opens its window.
                     return Signal(ShowEventName, "Rewind is already running: look for the red dot in the tray.");
@@ -74,14 +81,41 @@ namespace Rewind
                 Application.ThreadException += (s, e) => Log.Error("unhandled: " + e.Exception);
                 AppDomain.CurrentDomain.UnhandledException += (s, e) => Log.Error("fatal: " + e.ExceptionObject);
 
+                UpdateHandOff handOff;
                 using (var app = new TrayApp(appDir))
                 {
                     if (!app.Start()) return 2;
+                    if (restarted)
+                    {
+                        var updated = mode == Updater.AfterUpdateArg;
+                        if (updated) Updater.SignalStarted();
+                        app.AnnounceUpdate(updated, args.Length > 1 ? args[1] : "the old version");
+                    }
                     Application.Run();
+                    handOff = app.HandOff;
+                }
+                if (handOff != null)
+                {
+                    // The tray and ffmpeg are gone; free the lock so the new copy can take it.
+                    mutex.ReleaseMutex();
+                    return Updater.HandOff(handOff);
                 }
                 GC.KeepAlive(mutex);
             }
             return 0;
+        }
+
+        /// <summary>Up to 30 s for the copy being replaced to exit. True once the lock is ours.</summary>
+        private static bool WaitForOldCopy(Mutex mutex)
+        {
+            try
+            {
+                return mutex.WaitOne(30000);
+            }
+            catch (AbandonedMutexException)
+            {
+                return true; // it exited without letting go: the lock is ours now
+            }
         }
 
         /// <summary>Pokes the running Rewind through a named event. Quiet if there is none and no message is given.</summary>

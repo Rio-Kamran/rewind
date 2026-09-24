@@ -251,8 +251,10 @@ namespace Rewind
             var worker = new Thread(() =>
             {
                 string error = null;
+                Exports.Begin();
                 try { FfmpegRun.Execute(ffmpeg, args, output, SaveTimeoutMs); }
                 catch (Exception failure) { error = failure.Message; }
+                finally { Exports.End(); }
                 try { BeginInvoke(new Action(() => Saved(what, output, error, copy))); }
                 catch (InvalidOperationException) { }
             }) { IsBackground = true, Name = "rewind-trim-save" };

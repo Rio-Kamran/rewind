@@ -112,6 +112,7 @@ namespace Rewind
         public bool LockPaused { get { return _lockPaused; } }
         public bool GamePaused { get { return _gamePaused; } }
         public bool Saving { get { return _saving != 0; } }
+        public bool Shooting { get { return _shooting != 0; } }
         public bool Recording { get { return _recording != null; } }
         public SessionRecording CurrentRecording { get { return _recording; } }
 

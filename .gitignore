@@ -4,6 +4,7 @@ config.txt
 # Build output (run build.ps1)
 *.exe
 *.pdb
+obj/
 
 # Runtime files
 rewind.log

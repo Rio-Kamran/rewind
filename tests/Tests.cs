@@ -12,7 +12,7 @@ namespace Rewind.Tests
     /// parts that can be wrong without a GPU or a microphone: config parsing, hotkey parsing, the
     /// ring buffer, the keyframe cut, the ffmpeg command lines and the file-name cleanup.
     /// </summary>
-    internal static class Tests
+    internal static partial class Tests
     {
         private static int _passed, _failed;
 
@@ -690,6 +690,7 @@ namespace Rewind.Tests
                 Equal(GateEvent.Quiet, gate.Feed(0.006)); // under the floor: never speech
                 Throws<ArgumentOutOfRangeException>(() => new VoiceActivity(0, 1));
             });
+            UpdateTests();
 
             Console.WriteLine();
             Console.WriteLine(string.Format("{0} passed, {1} failed", _passed, _failed));

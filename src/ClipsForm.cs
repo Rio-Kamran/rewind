@@ -527,8 +527,10 @@ namespace Rewind
             {
                 ShareResult result = null;
                 string error = null;
+                Exports.Begin();
                 try { result = ShareExport.Run(ffmpeg, clip, maxMb, text => Progress(text)); }
                 catch (Exception failure) { error = failure.Message; }
+                finally { Exports.End(); }
                 try { BeginInvoke(new Action(() => Shared(clip, result, error))); }
                 catch (InvalidOperationException) { }
             }) { IsBackground = true, Name = "rewind-share" };
